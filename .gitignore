@@ -1,0 +1,10 @@
+/.codex/
+/.codex.meta
+/.agents/
+/.agents.meta
+/MixedSpacePackage.zip
+/MixedSpacePackage.zip.meta
+/*.tgz
+/*.tgz.meta
+**/.DS_Store
+**/._*
