@@ -20,7 +20,7 @@ namespace MixedSpace.EditorTools
     /// </summary>
     public static class MixedSpaceCurrentSchemaVerification
     {
-        private const string Package = "Packages/com.ningfeng.mixedspace";
+        private const string Package = "Packages/com.njyjxr.mixedspace";
         private static readonly HashSet<string> ExistingIssues = new HashSet<string>();
 
         public static void SaveAndVerify()

@@ -27,7 +27,7 @@ namespace MixedSpace.Editor
         /// </summary>
         internal static void RepairBundledIosImporter()
         {
-            const string path = "Packages/com.ningfeng.mixedspace/Runtime/Plugins/iOS/libxrloc.a";
+            const string path = "Packages/com.njyjxr.mixedspace/Runtime/Plugins/iOS/libxrloc.a";
             var plugin = AssetImporter.GetAtPath(path) as PluginImporter;
             if (plugin == null) return;
             bool needsRepair = plugin.GetCompatibleWithAnyPlatform() || plugin.GetCompatibleWithEditor() ||
@@ -56,7 +56,7 @@ namespace MixedSpace.Editor
         /// </summary>
         internal static void RepairBundledAndroidImporter()
         {
-            const string path = "Packages/com.ningfeng.mixedspace/Runtime/Plugins/Android/libs/arm64-v8a/libxrloc.so";
+            const string path = "Packages/com.njyjxr.mixedspace/Runtime/Plugins/Android/libs/arm64-v8a/libxrloc.so";
             var plugin = AssetImporter.GetAtPath(path) as PluginImporter;
             if (plugin == null)
             {
@@ -89,7 +89,7 @@ namespace MixedSpace.Editor
         /// </summary>
         internal static void RepairBundledDesktopImporter()
         {
-            const string path = "Packages/com.ningfeng.mixedspace/Runtime/Plugins/x86_64/xrloc.dll";
+            const string path = "Packages/com.njyjxr.mixedspace/Runtime/Plugins/x86_64/xrloc.dll";
             var plugin = AssetImporter.GetAtPath(path) as PluginImporter;
             if (plugin == null) return;
             bool needsRepair = plugin.GetCompatibleWithAnyPlatform() || !plugin.GetCompatibleWithEditor() ||
@@ -121,7 +121,7 @@ namespace MixedSpace.Editor
         /// </summary>
         internal static void RepairBundledNativeImporters()
         {
-            const string prefix = "Packages/com.ningfeng.mixedspace/Runtime/Plugins/";
+            const string prefix = "Packages/com.njyjxr.mixedspace/Runtime/Plugins/";
             var targets = new List<BuildTarget> { BuildTarget.Android, BuildTarget.iOS,
                 BuildTarget.StandaloneWindows, BuildTarget.StandaloneWindows64, BuildTarget.StandaloneOSX,
                 BuildTarget.StandaloneLinux64, BuildTarget.WebGL, BuildTarget.WSAPlayer, BuildTarget.tvOS };

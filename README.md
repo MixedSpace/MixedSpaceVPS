@@ -2,7 +2,7 @@
 
 面向 Unity 空间增强现实应用的视觉定位（VPS）SDK，提供云端与设备端定位、地图加载与管理、位姿融合和诊断日志。
 
-- 包标识：`com.ningfeng.mixedspace`
+- 包标识：`com.njyjxr.mixedspace`
 - 版本：`2.0.0`
 - 最低 Unity 版本：`2022.3`（按包配置声明）
 
@@ -13,10 +13,10 @@
 在 Unity 的 Package Manager 中选择 **Add package from git URL**，输入：
 
 ```text
-https://github.com/MixedSpace/MixedSpaceVPS.git#v2.0.0
+https://github.com/MixedSpace/MixedSpaceVPS.git#upm/v2.0.0
 ```
 
-此地址在 GitHub 的 `v2.0.0` 标签发布后可用。
+此地址在 GitHub 的 `upm/v2.0.0` 标签发布后可用。
 
 ### OpenUPM
 
@@ -24,11 +24,11 @@ OpenUPM 收录且 `2.0.0` 构建完成后，在 **Project Settings > Package Man
 
 - Name：`OpenUPM`
 - URL：`https://package.openupm.com`
-- Scope：`com.ningfeng.mixedspace`
+- Scope：`com.njyjxr.mixedspace`
 
 然后在 Package Manager 中选择 **Add package by name**：
 
-- Name：`com.ningfeng.mixedspace`
+- Name：`com.njyjxr.mixedspace`
 - Version：`2.0.0`
 
 添加 Registry 时请保留项目原有的 Registry 配置。

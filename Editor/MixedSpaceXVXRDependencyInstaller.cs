@@ -17,7 +17,7 @@ namespace MixedSpace.Editor
     /// </summary>
     internal static class MixedSpaceXVXRDependencyInstaller
     {
-        internal const string PackageName = "com.ningfeng.mixedspace";
+        internal const string PackageName = "com.njyjxr.mixedspace";
         private const string ArchiveName = "XVXRDependencies.zip";
 
         internal enum DependencyGroup { MRTK, TextMeshPro, XVisio }

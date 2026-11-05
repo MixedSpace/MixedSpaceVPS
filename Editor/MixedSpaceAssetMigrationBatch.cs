@@ -15,7 +15,7 @@ namespace MixedSpace.EditorTools
     /// </summary>
     public static class MixedSpaceAssetMigrationBatch
     {
-        internal const string PackageRoot = "Packages/com.ningfeng.mixedspace";
+        internal const string PackageRoot = "Packages/com.njyjxr.mixedspace";
         internal const string BasePrefab = PackageRoot + "/Runtime/Resources/Prefabs/MixedSpaceSDK.prefab";
         internal const string ScriptPath = PackageRoot + "/Runtime/Scripts/MixedSpaceSDK.cs";
 

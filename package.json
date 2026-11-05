@@ -1,5 +1,5 @@
 {
-  "name": "com.ningfeng.mixedspace",
+  "name": "com.njyjxr.mixedspace",
   "version": "2.0.0",
   "displayName": "MixedSpaceVPS",
   "description": "MixedSpace SDK 是面向 Unity 空间增强现实应用的视觉定位（VPS）开发工具包，提供云端与设备端定位、地图加载与管理、相机图像和跟踪位姿接入、定位调度、位姿融合及诊断日志。通过平台适配器统一对接移动端与 XR 设备，并使用 RunPlan 配置定位模式和运行策略。包内提供 Mobile、PICO 4 Ultra、PICO 4 Ultra Enterprise、PICO 4 Enterprise、Huawei AR Engine、XRany 和 Rokid 的适配示例。",
