@@ -28,6 +28,9 @@ PluginImporter:
       enabled: 1
       settings:
         CPU: AnyCPU
+        AddToEmbeddedBinaries: false
+        CompileFlags: 
+        FrameworkDependencies: 
   userData: 
   assetBundleName: 
   assetBundleVariant: 

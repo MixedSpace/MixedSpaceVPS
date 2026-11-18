@@ -80,6 +80,13 @@ namespace MixedSpace.EditorTools
             int separator = assetName.IndexOf('-');
             string idToken = separator > 0 ? assetName.Substring(0, separator) : assetName;
             bool hasNumericPrefix = int.TryParse(idToken, out int parsedId) && parsedId > 0;
+            if (MixedSpaceMapDefinition.IsRetiredKey(parsedId) ||
+                MixedSpaceMapDefinition.HasLegacyHeader(mapAsset.bytes))
+            {
+                error = $"'{assetName}' is a retired map. Select an XrLoc map.";
+                return false;
+            }
+
             displayName = hasNumericPrefix && separator >= 0 && separator < assetName.Length - 1
                 ? assetName.Substring(separator + 1)
                 : assetName;
@@ -145,6 +152,9 @@ namespace MixedSpace.EditorTools
             Action<SDKMapMetadataGetResult> resultCallback,
             string jsonWritePath = "")
         {
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapId))
+                yield break;
+
             string targetFullPath = GetDirectoryPath(jsonWritePath);
             if (!EnsureDirectory(targetFullPath))
                 yield break;
@@ -177,7 +187,7 @@ namespace MixedSpace.EditorTools
 
             SDKMapMetadataGetResult result =
                 JsonUtility.FromJson<SDKMapMetadataGetResult>(request.downloadHandler.text);
-            if (result.error != "none")
+            if (result.error != "none" || MixedSpaceMapDefinition.IsRetiredKey(result.id))
                 yield break;
 
             resultCallback?.Invoke(result);
@@ -192,6 +202,9 @@ namespace MixedSpace.EditorTools
             Action<TextAsset> resultCallback,
             string bytesWritePath = "")
         {
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapId))
+                yield break;
+
             string targetFullPath = GetDirectoryPath(bytesWritePath);
             if (!EnsureDirectory(targetFullPath))
                 yield break;
@@ -211,8 +224,15 @@ namespace MixedSpace.EditorTools
             }
 
 
+            byte[] payload = request.downloadHandler.data;
+            if (MixedSpaceMapDefinition.HasLegacyHeader(payload))
+            {
+                MixedSpaceLogger.LogError($"Map {mapId} uses a retired container. An XrLoc map is required.");
+                yield break;
+            }
+
             string fileName = $"{mapId}-{mapName}.bytes";
-            WriteBytes(Path.Combine(targetFullPath, fileName), request.downloadHandler.data);
+            WriteBytes(Path.Combine(targetFullPath, fileName), payload);
             string assetPath = Path.Combine(GetDirectoryPath(bytesWritePath, true), fileName);
             ImportAsset(assetPath);
             TextAsset mapFile = AssetDatabase.LoadAssetAtPath<TextAsset>(NormalizeAssetPath(assetPath));
@@ -225,6 +245,9 @@ namespace MixedSpace.EditorTools
             Action<SDKSparseDownloadResult, string> resultCallback,
             string plyWritePath = "")
         {
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapId))
+                yield break;
+
             string targetFullPath = GetDirectoryPath(plyWritePath);
             if (!EnsureDirectory(targetFullPath))
                 yield break;

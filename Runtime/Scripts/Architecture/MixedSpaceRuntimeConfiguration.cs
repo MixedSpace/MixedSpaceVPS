@@ -23,15 +23,33 @@ namespace MixedSpace
     {
         public MixedSpaceLocalizationMode LocalizationMode { get; set; } = MixedSpaceLocalizationMode.OnDevice;
         public bool WritePoseLogs { get; set; }
-        private float m_PoseFusionRefineThresholdDist = 0.4f;
+        private MixedSpacePoseFusionConfig m_PoseFusionConfig = MixedSpacePoseFusionConfig.Default;
+        /// <summary>
+        /// 创建 World 融合会话时使用的配置。
+        /// Configuration used when creating a World fusion session.
+        /// </summary>
+        public MixedSpacePoseFusionConfig PoseFusionConfig
+        {
+            get => m_PoseFusionConfig;
+            set
+            {
+                value.Validate();
+                m_PoseFusionConfig = value;
+            }
+        }
+
+        /// <summary>
+        /// 兼容已有调用方，读写 PoseFusionConfig 中的距离纠偏阈值（米）。
+        /// Compatibility accessor for the distance refinement threshold in PoseFusionConfig, in meters.
+        /// </summary>
         public float PoseFusionRefineThresholdDist
         {
-            get => m_PoseFusionRefineThresholdDist;
+            get => m_PoseFusionConfig.refine_threshold_dist;
             set
             {
                 if (float.IsNaN(value) || float.IsInfinity(value) || value < 0f)
                     throw new ArgumentOutOfRangeException(nameof(value), "Pose fusion refine distance must be finite and nonnegative.");
-                m_PoseFusionRefineThresholdDist = value;
+                m_PoseFusionConfig.refine_threshold_dist = value;
             }
         }
         [SerializeField] private MixedSpaceSessionOptions m_Session = new MixedSpaceSessionOptions();
@@ -147,9 +165,12 @@ namespace MixedSpace
     public sealed class MixedSpaceOnDeviceOptions
     {
         [SerializeField] private MixedSpaceProviderActivationMode m_ActivationMode = MixedSpaceProviderActivationMode.Always;
-        [SerializeField] private MixedSpaceSolverType m_SolverType = MixedSpaceSolverType.Default;
-        [SerializeField, Min(0)] private int m_PriorNearestNeighborCount;
-        [SerializeField, Min(0f)] private float m_PriorRadius;
+        [SerializeField, Tooltip("Prior 使用可靠的地图位置帮助 XRLoc 选择定位候选。\nPrior uses a reliable map position to rank XRLoc localization candidates.")]
+        private MixedSpaceSolverType m_SolverType = MixedSpaceSolverType.Lean;
+        [SerializeField, Min(0), Tooltip("供支持近邻数的自定义定位器使用。\nUsed by custom localizers that support a neighbor count.")]
+        private int m_PriorNearestNeighborCount;
+        [SerializeField, Min(0f), Tooltip("供支持搜索半径的自定义定位器使用。\nUsed by custom localizers that support a search radius.")]
+        private float m_PriorRadius;
 
         public MixedSpaceProviderActivationMode ActivationMode { get => m_ActivationMode; set => m_ActivationMode = value; }
         public MixedSpaceSolverType SolverType { get => m_SolverType; set => m_SolverType = value; }
@@ -161,7 +182,7 @@ namespace MixedSpace
     public sealed class MixedSpaceCloudOptions
     {
         [SerializeField] private MixedSpaceProviderActivationMode m_ActivationMode = MixedSpaceProviderActivationMode.WhenNecessary;
-        [SerializeField] private MixedSpaceSolverType m_SolverType = MixedSpaceSolverType.Default;
+        [SerializeField] private MixedSpaceSolverType m_SolverType = MixedSpaceSolverType.Lean;
         [SerializeField, Min(0)] private int m_PriorNearestNeighborCountMin = 60;
         [SerializeField, Min(0)] private int m_PriorNearestNeighborCountMax = 720;
         [SerializeField] private Vector3 m_PriorScale = Vector3.one;

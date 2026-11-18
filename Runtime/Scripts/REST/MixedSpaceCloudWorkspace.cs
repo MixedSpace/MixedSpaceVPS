@@ -22,21 +22,6 @@ namespace MixedSpace.REST
             m_Context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
-        public async Task<int> GetLicenseLevelAsync(
-            IProgress<float> progress = null,
-            CancellationToken cancellationToken = default)
-        {
-            var request = new SDKStatusRequest { token = m_Context.DeveloperToken };
-            SDKStatusResult result = await m_Context.Client
-                .PostAsync<SDKStatusRequest, SDKStatusResult>(
-                    request,
-                    progress,
-                    cancellationToken,
-                    m_Context.LocalizationServer);
-            EnsureSuccess("license status", result.error);
-            return result.level;
-        }
-
         public async Task<IReadOnlyList<MixedSpaceCloudMapSummary>> FindLoadableMapsAsync(
             MixedSpaceCloudMapSearch search = null,
             IProgress<float> progress = null,
@@ -76,6 +61,7 @@ namespace MixedSpace.REST
 
             return result.jobs
                 .Where(job =>
+                    !MixedSpaceMapDefinition.IsRetiredKey(job.id) &&
                     job.type != (int)SDKJobType.Alignment &&
                     (job.status == SDKJobState.Sparse || job.status == SDKJobState.Done))
                 .Select(job => new MixedSpaceCloudMapSummary(job.id, job.name))
@@ -89,6 +75,8 @@ namespace MixedSpace.REST
         {
             if (mapKey <= 0)
                 throw new ArgumentOutOfRangeException(nameof(mapKey), "Map key must be positive.");
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapKey))
+                throw new ArgumentOutOfRangeException(nameof(mapKey), mapKey, "Four-digit maps are retired.");
 
             var request = new SDKMapMetadataGetRequest
             {
@@ -112,6 +100,9 @@ namespace MixedSpace.REST
         {
             if (upload == null)
                 throw new ArgumentNullException(nameof(upload));
+            byte[] payload = upload.CopyPayload();
+            if (MixedSpaceMapDefinition.HasLegacyHeader(payload))
+                throw new ArgumentException("Legacy map containers are retired. Upload an XrLoc map.", nameof(upload));
 
             var request = new SDKMapUploadRequest
             {
@@ -124,7 +115,7 @@ namespace MixedSpace.REST
             SDKMapUploadResult result = await m_Context.Client
                 .UploadAsync<SDKMapUploadRequest, SDKMapUploadResult>(
                     request,
-                    upload.CopyPayload(),
+                    payload,
                     progress,
                     cancellationToken);
             EnsureSuccess("map upload", result.error);

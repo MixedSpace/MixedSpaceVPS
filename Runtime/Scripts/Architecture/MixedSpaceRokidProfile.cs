@@ -18,8 +18,10 @@ namespace MixedSpace.XR
         [SerializeField] private Vector4 m_OutputIntrinsics;
         [SerializeField] private Vector2Int m_CalibrationResolution;
 
+        // 每次启动实测图像和位姿的时间单位，避免 SDK/固件切换后沿用错误的固定缩放。
+        // Measure both clocks on each startup instead of trusting a fixed SDK/firmware unit.
         public MixedSpaceRokidSettings CreateSettings() => new MixedSpaceRokidSettings(
-            m_StartupTimeoutMilliseconds, m_MaxFrameAgeMilliseconds, MixedSpaceCallbackCameraAdapter.TimestampUnit.Microseconds,
+            m_StartupTimeoutMilliseconds, m_MaxFrameAgeMilliseconds, MixedSpaceCallbackCameraAdapter.TimestampUnit.Auto,
             m_ImageOrientationEuler, m_Calibration, m_OutputIntrinsics, m_CalibrationResolution);
     }
 

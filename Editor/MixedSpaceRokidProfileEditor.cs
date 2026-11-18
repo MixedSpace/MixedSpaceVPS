@@ -1,4 +1,4 @@
-﻿using MixedSpace.XR;
+using MixedSpace.XR;
 using UnityEditor;
 using UnityEngine;
 
@@ -15,7 +15,7 @@ namespace MixedSpace.Editor
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
-            EditorGUILayout.HelpBox("相机参数从 Rokid 读取。定位使用去畸变函数返回的输出内参；历史手动内参字段不再覆盖原生返回值。", MessageType.Info);
+            EditorGUILayout.HelpBox("相机参数由 Rokid 提供。定位使用去畸变函数返回的输出内参。", MessageType.Info);
             var calibration = serializedObject.FindProperty("m_Calibration");
             if (calibration.enumValueIndex == 0)
                 EditorGUILayout.HelpBox("当前校正内参契约尚未确认，请由接入开发人员确认高级设置。", MessageType.Warning);
@@ -28,8 +28,8 @@ namespace MixedSpace.Editor
                 EditorGUILayout.PropertyField(calibration, new GUIContent("校正内参策略"));
                 if (calibration.enumValueIndex == (int)MixedSpaceXrLocFisheyeProcessor.CalibrationMode.ExplicitOutputIntrinsics)
                 {
-                    EditorGUILayout.PropertyField(serializedObject.FindProperty("m_OutputIntrinsics"), new GUIContent("历史输出内参（仅供对照）"));
-                    EditorGUILayout.PropertyField(serializedObject.FindProperty("m_CalibrationResolution"), new GUIContent("手动内参对应分辨率"));
+                    EditorGUILayout.PropertyField(serializedObject.FindProperty("m_OutputIntrinsics"), new GUIContent("参考输出内参"));
+                    EditorGUILayout.PropertyField(serializedObject.FindProperty("m_CalibrationResolution"), new GUIContent("参考内参对应分辨率"));
                 }
             }
             serializedObject.ApplyModifiedProperties();

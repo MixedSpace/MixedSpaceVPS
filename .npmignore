@@ -16,3 +16,5 @@
 /*.tgz.meta
 **/.DS_Store
 **/._*
+**/.idea/
+**/.idea.meta

@@ -86,13 +86,25 @@ namespace MixedSpace.XR
             if (m_Readiness?.IsReady != true)
                 throw new MixedSpaceRuntimeUnavailableException("Trying to capture before platform startup.");
             var tracking = new MixedSpaceTrackingSnapshot(m_Pose.IsTracking ? 1 : 0);
-            var capture = m_Acquisition.Acquire(m_CaptureFormat, cancellationToken);
+            var capture = m_Acquisition.Acquire(m_CaptureFormat, cancellationToken, NativeImageRotationAngle());
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 return Task.FromResult<IMixedSpacePlatformFrame>(new MixedSpacePlatformFrame(tracking, capture));
             }
             catch { capture?.Dispose(); throw; }
+        }
+
+        private int? NativeImageRotationAngle()
+        {
+#if UNITY_ANDROID
+            // CPU 图像方向由 Android 相机适配层提供，Lean 和 Prior 共用此参数。
+            // The Android camera adapter supplies the CPU image direction for both Lean and Prior.
+            int displayAngle = Mathf.RoundToInt(m_Display.Angle(Screen.orientation));
+            return ((displayAngle - 90) % 360 + 360) % 360;
+#else
+            return null;
+#endif
         }
 
         public MixedSpacePlatformPoseSample SamplePose() => m_Pose.SamplePose();

@@ -40,6 +40,13 @@ namespace MixedSpace
             bool allBindingsValid = true;
             foreach (MixedSpaceMapBinding binding in bindings)
             {
+                int mapKey = binding.Definition.Key;
+                if (MixedSpaceMapDefinition.IsRetiredKey(mapKey))
+                {
+                    MixedSpaceLogger.LogWarning($"Skipping retired scene map {mapKey}. Use an XrLoc map.");
+                    continue;
+                }
+
                 MixedSpaceWorldRoot root = binding.transform
                     .GetComponentInParent<MixedSpaceWorldRoot>(true);
                 if (!root)
@@ -51,7 +58,7 @@ namespace MixedSpace
                 }
 
                 IMixedSpaceWorldChannel world = m_Worlds.Open(root);
-                MixedSpaceLogger.Log($"Importing map {binding.Definition.Key}");
+                MixedSpaceLogger.Log($"Importing map {mapKey}");
                 importTasks.Add(m_Maps.ImportAsync(
                     new MixedSpaceMapImport(binding, world)));
             }

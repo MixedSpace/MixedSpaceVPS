@@ -21,27 +21,9 @@ PluginImporter:
     second:
       enabled: 1
       settings:
-        CPU: x86_64
         DefaultValueInitialized: true
-        OS: Windows
-  - first:
-      Standalone: Linux64
-    second:
-      enabled: 0
-      settings:
-        CPU: AnyCPU
-  - first:
-      Standalone: OSXUniversal
-    second:
-      enabled: 0
-      settings:
         CPU: x86_64
-  - first:
-      Standalone: Win
-    second:
-      enabled: 0
-      settings:
-        CPU: None
+        OS: Windows
   - first:
       Standalone: Win64
     second:

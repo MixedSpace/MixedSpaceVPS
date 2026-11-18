@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
@@ -135,14 +135,10 @@ namespace MixedSpace.Editor
                 bool editor = false;
                 if (relative.StartsWith("x86_64/", StringComparison.Ordinal) && relative.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                 { allowed = BuildTarget.StandaloneWindows64; cpu = "x86_64"; editor = true; }
-                else if (relative.StartsWith("WSA/ARM64/", StringComparison.Ordinal) && relative.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                { allowed = BuildTarget.WSAPlayer; cpu = "ARM64"; }
                 else if (relative.StartsWith("iOS/", StringComparison.Ordinal) && relative.EndsWith(".a", StringComparison.OrdinalIgnoreCase))
                 { allowed = BuildTarget.iOS; cpu = "AnyCPU"; }
                 else if (relative.StartsWith("Android/libs/arm64-v8a/", StringComparison.Ordinal) && relative.EndsWith(".so", StringComparison.OrdinalIgnoreCase))
                 { allowed = BuildTarget.Android; cpu = "ARM64"; }
-                else if (relative.StartsWith("Android/x86_64/", StringComparison.Ordinal) && relative.EndsWith(".so", StringComparison.OrdinalIgnoreCase))
-                { allowed = BuildTarget.Android; cpu = "x86_64"; }
                 else if (relative.StartsWith("Android/", StringComparison.Ordinal) && relative.EndsWith(".aar", StringComparison.OrdinalIgnoreCase))
                 { allowed = BuildTarget.Android; cpu = null; }
                 else continue;

@@ -114,6 +114,15 @@ namespace MixedSpace.XR
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
 
+            if (MixedSpaceMapDefinition.IsRetiredKey(request.Definition.Key))
+            {
+                MixedSpaceLogger.LogError($"Map {request.Definition.Key} is retired. Use an XrLoc map.");
+                Changed?.Invoke(new MixedSpaceMapLibraryChange(
+                    MixedSpaceMapLibraryChangeKind.ImportFailed,
+                    request.Definition.Key));
+                return false;
+            }
+
             if (m_Mode == MixedSpaceLocalizationMode.Cloud &&
                 request.Definition.Key >= 0x40000000)
             {

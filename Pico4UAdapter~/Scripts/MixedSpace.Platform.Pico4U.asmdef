@@ -1,0 +1,12 @@
+{
+    "name": "MixedSpace.Platform.Pico4U",
+    "references": [
+        "MixedSpace.Core",
+        "Unity.XR.PICO"
+    ],
+    "includePlatforms": [],
+    "autoReferenced": true,
+    "excludePlatforms": [],
+    "defineConstraints": [],
+    "versionDefines": []
+}

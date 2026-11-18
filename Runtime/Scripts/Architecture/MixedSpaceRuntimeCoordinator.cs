@@ -29,7 +29,6 @@ namespace MixedSpace
             Action<MixedSpaceRuntimeState> reportState,
             Action<Exception, string, bool> reportError,
             Action applyFrameRate,
-            Action applyDownsampling,
             Action initializationCompleted,
             Action validationCompleted,
             Action runtimeReset,
@@ -63,7 +62,6 @@ namespace MixedSpace
                     reportState,
                     reportError,
                     applyFrameRate,
-                    applyDownsampling,
                     initializationCompleted,
                     validationCompleted,
                     runtimeReset,
@@ -95,8 +93,7 @@ namespace MixedSpace
         }
 
         public bool IsReady => m_Supervisor.IsReady;
-        public int LicenseLevel => m_Supervisor.LicenseLevel;
-        public bool HasValidated => m_Supervisor.HasValidated;
+        public bool? TokenValidationResult => m_Supervisor.TokenValidationResult;
         public bool InitializationRunning => m_Supervisor.InitializationRunning;
         public CancellationToken LifetimeToken => m_Lifetime.Token;
         public bool IsCancellationRequested => m_Lifetime.IsCancellationRequested;
@@ -114,12 +111,6 @@ namespace MixedSpace
         {
             ThrowIfDisposed();
             return m_Supervisor.InitializeAsync();
-        }
-
-        public Task RefreshLicenseAsync()
-        {
-            ThrowIfDisposed();
-            return m_Supervisor.RefreshLicenseAsync();
         }
 
         public void Tick()

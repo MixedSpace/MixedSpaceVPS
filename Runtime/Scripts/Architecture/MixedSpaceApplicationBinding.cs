@@ -18,7 +18,7 @@ namespace MixedSpace
         [SerializeField] private MixedSpaceApplicationSignals m_ApplicationSignals = new MixedSpaceApplicationSignals();
         [SerializeField, Tooltip("SDK 运行时初始化完成，可调用定位控制方法；不代表定位成功。\nSDK initialization completed; localization controls are available. This does not mean localization succeeded.")]
         private UnityEvent m_RuntimeReady = new UnityEvent();
-        [SerializeField, Tooltip("许可等级刷新完成，不是定位成功通知。\nEntitlement refresh completed; this is not a localization success notification.")]
+        [SerializeField, Tooltip("Token 验证返回后触发，可读取 SDK 的 TokenValidationResult。\nRaised when token validation returns. Read TokenValidationResult on the SDK for the outcome.")]
         private UnityEvent m_EntitlementResolved = new UnityEvent();
         [SerializeField, Tooltip("运行时重建流程通知，不等于会话重置完成；就绪请监听 Runtime Ready。\nRuntime rebuild notification, not session reset completion. Listen to Runtime Ready for readiness.")]
         private UnityEvent m_RuntimeRebuilt = new UnityEvent();
@@ -36,8 +36,8 @@ namespace MixedSpace
         /// </summary>
         public UnityEvent Ready { get => m_RuntimeReady; set => m_RuntimeReady = value ?? new UnityEvent(); }
         /// <summary>
-        /// 许可等级刷新完成事件。
-        /// Raised when entitlement refresh completes.
+        /// Token 验证返回事件。
+        /// Raised when token validation returns.
         /// </summary>
         public UnityEvent Entitlement { get => m_EntitlementResolved; set => m_EntitlementResolved = value ?? new UnityEvent(); }
         /// <summary>

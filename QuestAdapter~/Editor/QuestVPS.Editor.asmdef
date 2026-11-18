@@ -1,0 +1,25 @@
+{
+    "name": "QuestVPS.Editor",
+    "references": [
+        "Oculus.VR.Editor",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor",
+        "Unity.XR.OpenXR",
+        "Unity.XR.OpenXR.Editor",
+        "Unity.XR.OpenXR.Features.MetaQuestSupport"
+    ],
+    "includePlatforms": ["Editor"],
+    "defineConstraints": ["MIXEDSPACE_QUEST_CORE", "MIXEDSPACE_QUEST_OPENXR"],
+    "versionDefines": [
+        {
+            "name": "com.meta.xr.sdk.core",
+            "expression": "81.0.0",
+            "define": "MIXEDSPACE_QUEST_CORE"
+        },
+        {
+            "name": "com.unity.xr.openxr",
+            "expression": "1.14.3",
+            "define": "MIXEDSPACE_QUEST_OPENXR"
+        }
+    ]
+}

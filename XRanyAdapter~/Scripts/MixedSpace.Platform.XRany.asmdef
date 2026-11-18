@@ -1,0 +1,17 @@
+{
+  "overrideReferences": false,
+  "noEngineReferences": false,
+  "precompiledReferences": [],
+  "versionDefines": [],
+  "defineConstraints": [],
+  "autoReferenced": true,
+  "rootNamespace": "",
+  "allowUnsafeCode": false,
+  "includePlatforms": [],
+  "name": "MixedSpace.Platform.XRany",
+  "excludePlatforms": [],
+  "references": [
+    "MixedSpace.Core",
+    "GxrSdk.Runtime"
+  ]
+}

@@ -47,15 +47,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_RunPlan: {fileID: 11400000, guid: d95308f3fcf2f634298597376c3383ee, type: 2}
+  m_ShowRuntimeLogs: 0
   m_ApplicationBinding: {fileID: 7288438418849270614}
   m_ScenePorts:
     m_LocalizationViews: []
     m_AlignmentSolverOverride: {fileID: 0}
     m_ExtensionProviders: []
   m_DeveloperToken: 
-  m_ServerMapLoad: http://192.168.1.170/vps/proxy
-  m_ServerAddressLocalize: http://192.168.1.170/vps/limitRatesVpslocalize
-  m_XrLocServer: 1
+  m_ServerMapLoad: https://vps.njyjxr.com:18444/vpssdk/vps/proxy
+  m_ServerAddressLocalize: https://vps.njyjxr.com:18444/vpssdk/vps/limitRatesVpslocalize
   m_PlatformAdapter: {fileID: 0}
 --- !u!114 &7288438418849270614
 MonoBehaviour:

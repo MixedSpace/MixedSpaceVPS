@@ -21,23 +21,12 @@ namespace MixedSpace
         private readonly Func<bool> m_IsSdkReady;
         private readonly Action m_CloseManualLocalizationGate;
         private readonly Action m_HandleTrackingLoss;
-        private readonly Func<int> m_XrLocServerId;
 
         /// <summary>
         /// 云模式预加载地图的原生数据，使云端与设备端求解共用地图库，支持离线回退。
         /// Preloads native map data in Cloud mode so cloud and on-device solving share the catalog for offline fallback.
         /// </summary>
         private const bool PrepareCloudOfflineMaps = true;
-
-        /// <summary>
-        /// 地图导入后端。Auto 优先识别容器头；无法识别时，才按四位或六位地图 ID
-        /// 分别回退到 PosePlugin 或 xrloc。其他未知容器会被拒绝。
-        /// 固定后端仅用于明确指定某个加载器的诊断场景。
-        /// Map import backend. Auto first identifies the container header, then falls back to four-digit
-        /// PosePlugin or six-digit xrloc IDs only for unknown headers. Other unknown containers are rejected. Pinning a
-        /// backend is for explicit loader diagnostics.
-        /// </summary>
-        private const MixedSpaceNativeBackend NativeBackendPreference = MixedSpaceNativeBackend.Auto;
 
         private IMixedSpaceMapRepository m_MapRepository;
         private bool m_MapRepositoryIsInjected;
@@ -68,8 +57,7 @@ namespace MixedSpace
             Action closeManualLocalizationGate,
             Action handleTrackingLoss,
             Func<string> mapServer = null,
-            Func<string> localizeServer = null,
-            Func<int> xrLocServerId = null)
+            Func<string> localizeServer = null)
         {
             m_Configuration = configuration ??
                 throw new ArgumentNullException(nameof(configuration));
@@ -80,20 +68,11 @@ namespace MixedSpace
             m_IsSdkReady = isSdkReady ?? throw new ArgumentNullException(nameof(isSdkReady));
             m_CloseManualLocalizationGate = closeManualLocalizationGate;
             m_HandleTrackingLoss = handleTrackingLoss;
-            m_XrLocServerId = xrLocServerId;
             // 透传服务器读取委托，使每个请求看到 Inspector 修改，无需重建服务图。
             // Server delegates are passed through, so Inspector edits reach the network layer on every request without
             // rebuilding the composition.
-            m_NetworkEnvironment = new MixedSpaceNetworkEnvironment(mapServer, localizeServer, xrLocServerId);
+            m_NetworkEnvironment = new MixedSpaceNetworkEnvironment(mapServer, localizeServer);
         }
-
-        /// <summary>
-        /// 每次使用时读取 Inspector 当前选择的 xrloc 服务器环境。
-        /// Inspector-selected xrloc server profile, read live per use.
-        /// </summary>
-        public int XrLocServerId => m_XrLocServerId != null
-            ? m_XrLocServerId()
-            : (int)MixedSpaceXrLocServer.Production;
 
         public MixedSpaceRuntime Runtime => m_Runtime;
         // 报告启动失败的诊断不能反过来创建服务。
@@ -168,12 +147,17 @@ namespace MixedSpace
             m_MapContentSource ??= new MixedSpaceCloudMapContentSource(CloudContext);
 
         /// <summary>
-        /// 创建统一的混合原生核心，由容器格式决定地图加载后端。
-        /// Creates the shared hybrid native core, which selects the map loader by container format.
+        /// 创建供运行时服务共用的 XrLoc 核心。
+        /// Creates the XrLoc core shared by runtime services.
         /// </summary>
-        private static IMixedSpaceNativeCore CreateNativeCore()
+        private IMixedSpaceNativeCore CreateNativeCore()
         {
-            return new MixedSpaceHybridNativeCore(NativeBackendPreference);
+            string priorLogPath = m_Configuration.WritePoseLogs
+                ? MixedSpaceLocalizationJournal.GetPositionPriorLogPath()
+                : null;
+            var core = new MixedSpaceXrLocCore(priorLogPath);
+            MixedSpaceLogger.Log($"xrloc version={MixedSpaceXrLocCore.DescribeVersion() ?? "unavailable"}");
+            return core;
         }
 
         private IMixedSpaceHttpTransport HttpTransport
@@ -210,9 +194,8 @@ namespace MixedSpace
             var clock = new UnityMixedSpaceRuntimeClock();
             if (m_Platform is IMixedSpaceCaptureDiagnostics captureDiagnostics)
                 captureDiagnostics.SetWritePoseLogs(m_Configuration.WritePoseLogs);
-            var poseFusionConfig = MixedSpacePoseFusionConfig.Default;
-            poseFusionConfig.refine_threshold_dist = m_Configuration.PoseFusionRefineThresholdDist;
-            m_WorldRegistry = new MixedSpaceWorldRegistry(m_Platform, PoseFusionFactory, m_Configuration.WritePoseLogs, poseFusionConfig);
+            m_WorldRegistry = new MixedSpaceWorldRegistry(m_Platform, PoseFusionFactory,
+                m_Configuration.WritePoseLogs, m_Configuration.PoseFusionConfig);
             var localization = new MixedSpaceLocalizationEngine();
             var eventAdapter = new MixedSpaceUnityEventAdapter(
                 m_Signals,
@@ -240,8 +223,14 @@ namespace MixedSpace
                     progress => MixedSpaceCallbackGuard.Invoke(
                         () => m_Signals.CloudSolveProgress?.Invoke(progress),
                         nameof(m_Signals.CloudSolveProgress)));
-                var localOptions = MixedSpaceRuntimeConfiguration.CopyValue(m_Configuration.OnDevice);
-                localOptions.ActivationMode = MixedSpaceProviderActivationMode.WhenNecessary;
+                // Offline fallback follows the same Cloud plan, including solver and supported prior settings.
+                var localOptions = new MixedSpaceOnDeviceOptions
+                {
+                    ActivationMode = MixedSpaceProviderActivationMode.WhenNecessary,
+                    SolverType = options.SolverType,
+                    PriorNearestNeighborCount = options.PriorNearestNeighborCountMin,
+                    PriorRadius = options.PriorRadius
+                };
                 var offline = new MixedSpaceOnDeviceLocalization(localOptions, maps, NativeCore, clock);
                 providers.Add(new MixedSpaceCloudWithOfflineFallback(cloud, offline,
                     maps as IMixedSpaceOfflineMapReadiness, HasNetworkConnection, clock));

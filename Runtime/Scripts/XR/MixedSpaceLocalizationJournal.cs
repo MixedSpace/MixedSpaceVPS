@@ -34,6 +34,16 @@ namespace MixedSpace.XR
     }
 
     /// <summary>
+    /// 可选平台适配器在主线程 LateUpdate 中记录跟踪、渲染相机及 World 的对照快照。
+    /// Optional adapter diagnostic port. Call from main-thread LateUpdate only when pose logging is enabled.
+    /// </summary>
+    public static class MixedSpacePoseDiagnostics
+    {
+        public static void AppendTrackingSample(MixedSpacePlatformPoseSample sample, string trackingPoseSource = "platform") =>
+            MixedSpaceLocalizationJournal.AppendTrackingDiagnostic(sample, trackingPoseSource);
+    }
+
+    /// <summary>
     /// 每次成功提交将原生融合输入及采集位姿写为一行 JSON，保留字段名、时间单位和追加方式以便离线比较；World 输出矩阵及 Unity 位姿另存，日志失败不打断定位。
     /// Writes native fusion input and its capture pose as one JSON line per successful submission.
     /// Preserves field names, timestamp units and append behavior for offline comparison.
@@ -43,7 +53,181 @@ namespace MixedSpace.XR
     internal static class MixedSpaceLocalizationJournal
     {
         private const string PoseFusionLogFileName = "pose_fusion_localizations.json";
+        private const string TrackingStatusLogFileName = "tracking_status.json";
 
+        internal static void AppendLiveTrackingStatus(MixedSpaceWorldRoot world, MixedSpacePlatformPoseSample sample)
+        {
+            try
+            {
+                AppendTrackingStatus(new LiveTrackingStatus
+                {
+                    stage = "live_pose",
+                    world_instance_id = GetWorldLogId(world),
+                    timestamp_ns = sample.TimestampNanoseconds,
+                    timestamp_source = sample.TimestampSource.ToString(),
+                    host_realtime_seconds = Time.realtimeSinceStartupAsDouble,
+                    tracking = sample.IsTracking
+                });
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogWarning($"Failed to append live tracking status ({exception.GetType().Name}).");
+            }
+        }
+
+        /// <summary>
+        /// 采集轮询没有图像时，图像时间戳记为 0，仍记录跟踪状态和 Unity 启动后的秒数。
+        /// When no image is available, log the tracking state and seconds since Unity started, with a zero image timestamp.
+        /// </summary>
+        internal static void AppendCaptureTrackingStatus(IMixedSpacePlatformFrame frame)
+        {
+            try
+            {
+                bool hasCapture = frame.HasCapture;
+                AppendTrackingStatus(new CaptureTrackingStatus
+                {
+                    stage = "capture",
+                    timestamp_ns = hasCapture ? frame.Capture.Profile.CapturedAtNanoseconds : 0,
+                    host_realtime_seconds = Time.realtimeSinceStartupAsDouble,
+                    platform_tracking_quality = frame.Tracking.Quality,
+                    has_capture = hasCapture
+                });
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogWarning($"Failed to append capture tracking status ({exception.GetType().Name}).");
+            }
+        }
+
+        private static void AppendTrackingStatus(object entry) =>
+            MixedSpacePoseJournalWriter.Append(MixedSpacePoseLogFiles.GetPath(TrackingStatusLogFileName),
+                JsonUtility.ToJson(entry));
+
+        [Serializable]
+        private sealed class LiveTrackingStatus
+        {
+            public string stage;
+            public long world_instance_id;
+            public long timestamp_ns;
+            public string timestamp_source;
+            public double host_realtime_seconds;
+            public bool tracking;
+        }
+
+        [Serializable]
+        private sealed class CaptureTrackingStatus
+        {
+            public string stage;
+            public long timestamp_ns;
+            public double host_realtime_seconds;
+            public int platform_tracking_quality;
+            public bool has_capture;
+        }
+
+        internal static string GetPositionPriorLogPath()
+        {
+            try
+            {
+                return MixedSpacePoseLogFiles.GetPath("xrloc_prior_localizations.json");
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogWarning($"Could not prepare XRLoc position prior log ({exception.GetType().Name}).");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 用图像采集时间关联位置先验请求和原生返回状态，包含未命中的调用。
+        /// Correlate position prior requests and native results, including misses, by the image capture time.
+        /// </summary>
+        internal static void AppendPositionPriorLog(
+            string path,
+            long timestampNanoseconds,
+            int[] mapIds,
+            int solver,
+            int rotationAngle,
+            float[] rotationPrior,
+            MixedSpaceXrLocPosePrior prior,
+            int status,
+            MixedSpaceXrLocPose pose,
+            long elapsedMs)
+        {
+            try
+            {
+                bool hasPose = status == (int)MixedSpaceXrLocStatus.Ok && pose.success != 0;
+                var entry = new XrLocPositionPriorLogEntry
+                {
+                    timestamp_ns = timestampNanoseconds,
+                    timestamp_ms = timestampNanoseconds / 1000000,
+                    elapsed_ms = elapsedMs,
+                    input = new XrLocPositionPriorInput
+                    {
+                        map_id = prior.mapId,
+                        position = new[] { prior.x, prior.y, prior.z },
+                        search_map_ids = mapIds,
+                        solver = solver,
+                        rotation_angle = rotationAngle,
+                        rotation_prior_xyzw = rotationPrior
+                    },
+                    output = new XrLocPositionPriorOutput
+                    {
+                        status = status,
+                        success = pose.success != 0,
+                        map_id = pose.mapId,
+                        confidence = pose.confidence,
+                        position = hasPose ? new[] { pose.px, pose.py, pose.pz } : Array.Empty<double>(),
+                        rotation_row_major = hasPose
+                            ? new[]
+                            {
+                                pose.r00, pose.r01, pose.r02,
+                                pose.r10, pose.r11, pose.r12,
+                                pose.r20, pose.r21, pose.r22
+                            }
+                            : Array.Empty<double>()
+                    }
+                };
+
+                string json = JsonUtility.ToJson(entry);
+                MixedSpacePoseJournalWriter.Append(path, json);
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogWarning($"Failed to append XRLoc position prior log ({exception.GetType().Name}).");
+            }
+        }
+
+        [Serializable]
+        private sealed class XrLocPositionPriorLogEntry
+        {
+            public long timestamp_ns;
+            public long timestamp_ms;
+            public long elapsed_ms;
+            public XrLocPositionPriorInput input;
+            public XrLocPositionPriorOutput output;
+        }
+
+        [Serializable]
+        private sealed class XrLocPositionPriorInput
+        {
+            public int map_id;
+            public double[] position;
+            public int[] search_map_ids;
+            public int solver;
+            public int rotation_angle;
+            public float[] rotation_prior_xyzw;
+        }
+
+        [Serializable]
+        private sealed class XrLocPositionPriorOutput
+        {
+            public int status;
+            public bool success;
+            public int map_id;
+            public int confidence;
+            public double[] position;
+            public double[] rotation_row_major;
+        }
         // Keep a numeric, session-local correlation key without narrowing EntityId to int.
         private static long GetWorldLogId(UnityEngine.Object world)
         {
@@ -52,6 +236,22 @@ namespace MixedSpace.XR
 #else
             return world.GetInstanceID();
 #endif
+        }
+
+        internal static void AppendFusionCadence(MixedSpaceWorldRoot world, MixedSpaceTrackingTimestampSource source,
+            float elapsedSeconds, int samples, int submissions, int outputs, int worldWrites)
+        {
+            try
+            {
+                string message = FormattableString.Invariant(
+                    $"[POSE-CADENCE] world_instance_id={GetWorldLogId(world)} timestamp_source={source} window_seconds={elapsedSeconds:F3} samples={samples} submissions={submissions} valid_outputs={outputs} world_writes={worldWrites} sample_hz={samples / elapsedSeconds:F2} submission_hz={submissions / elapsedSeconds:F2}");
+                MixedSpacePoseFusionLogFile.Initialize();
+                MixedSpacePoseFusionLogFile.Append(2, message);
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogError("Fusion cadence log write failed (" + exception.GetType().Name + ").");
+            }
         }
 
         /// <summary>
@@ -89,8 +289,8 @@ namespace MixedSpace.XR
                     actual_world_matrix = MatrixValues(world.CurrentPose),
                     operations = operations, return_codes = returnCodes
                 };
-                File.AppendAllText(MixedSpacePoseLogFiles.GetPath("alignment_diagnostics.json"),
-                    JsonUtility.ToJson(entry) + Environment.NewLine);
+                MixedSpacePoseJournalWriter.Append(MixedSpacePoseLogFiles.GetPath("alignment_diagnostics.json"),
+                    JsonUtility.ToJson(entry));
             }
             catch (Exception e)
             {
@@ -103,6 +303,102 @@ namespace MixedSpace.XR
             var values = new float[16];
             for (int i = 0; i < values.Length; ++i) values[i] = matrix[i];
             return values;
+        }
+
+        /// <summary>
+        /// 以 5 Hz 记录同一次 LateUpdate 中的平台跟踪、Unity 相机及其父级。
+        /// LateUpdate 早于 XR 的 BeforeRender/预测修正，不能把单帧差值当作外参误差。
+        /// Records physical tracking and Unity camera/parent poses at 5 Hz in LateUpdate.
+        /// This precedes XR BeforeRender prediction; a single-frame delta is not an extrinsic error.
+        /// </summary>
+        internal static void AppendTrackingDiagnostic(MixedSpacePlatformPoseSample sample, string trackingPoseSource = "physical_camera")
+        {
+            try
+            {
+                Camera camera = Camera.main;
+                Transform view = camera ? camera.transform : null;
+                Transform parent = view ? view.parent : null;
+                Matrix4x4 physics = Matrix4x4.TRS(sample.Position, sample.Rotation, Vector3.one);
+                float[] relativeTracking = view && sample.IsTracking ?
+                    MatrixValues(view.worldToLocalMatrix * physics) : null;
+                MixedSpaceWorldRoot[] roots = UnityEngine.Object.FindObjectsOfType<MixedSpaceWorldRoot>();
+                var worlds = new TrackingWorldDiagnostic[roots.Length];
+                for (int i = 0; i < roots.Length; ++i)
+                {
+                    MixedSpaceWorldRoot world = roots[i];
+                    Transform worldParent = world.transform.parent;
+                    worlds[i] = new TrackingWorldDiagnostic
+                    {
+                        world_instance_id = GetWorldLogId(world), world_name = world.name,
+                        reliable = world.IsPoseReliable,
+                        world_matrix = MatrixValues(world.transform.localToWorldMatrix),
+                        parent_world_matrix = worldParent ? MatrixValues(worldParent.localToWorldMatrix) : null
+                    };
+                }
+                var entry = new TrackingDiagnostic
+                {
+                    schema_version = 1,
+                    phase = "LateUpdate",
+                    frame_count = Time.frameCount,
+                    host_realtime_seconds = Time.realtimeSinceStartup,
+                    timestamp_ns = sample.TimestampNanoseconds,
+                    tracking = sample.IsTracking,
+                    tracking_pose_source = trackingPoseSource,
+                    tracking_timestamp_source = sample.TimestampSource.ToString(),
+                    tracking_matrix_column_major = sample.IsTracking ? MatrixValues(physics) : null,
+                    has_render_camera = view != null,
+                    render_camera_name = camera ? camera.name : null,
+                    render_camera_world_matrix = view ? MatrixValues(view.localToWorldMatrix) : null,
+                    render_camera_local_matrix = view ? MatrixValues(Matrix4x4.TRS(
+                        view.localPosition, view.localRotation, view.localScale)) : null,
+                    render_parent_name = parent ? parent.name : null,
+                    render_parent_world_matrix = parent ? MatrixValues(parent.localToWorldMatrix) : null,
+                    render_root_world_matrix = view ? MatrixValues(view.root.localToWorldMatrix) : null,
+                    tracking_in_render_matrix = relativeTracking,
+                    physics_in_render_matrix = trackingPoseSource == "physical_camera" ? relativeTracking : null,
+                    worlds = worlds
+                };
+                MixedSpacePoseJournalWriter.Append(MixedSpacePoseLogFiles.GetPath("tracking_render_poses.json"),
+                    JsonUtility.ToJson(entry));
+            }
+            catch (Exception error)
+            {
+                MixedSpaceLogger.LogError("Tracking diagnostic write failed (" + error.GetType().Name + ").");
+            }
+        }
+
+        [Serializable]
+        private sealed class TrackingDiagnostic
+        {
+            public int schema_version;
+            public string phase;
+            public int frame_count;
+            public float host_realtime_seconds;
+            public long timestamp_ns;
+            public bool tracking;
+            public string tracking_pose_source;
+            public string tracking_timestamp_source;
+            public float[] tracking_matrix_column_major;
+            public bool has_render_camera;
+            public string render_camera_name;
+            public float[] render_camera_world_matrix;
+            public float[] render_camera_local_matrix;
+            public string render_parent_name;
+            public float[] render_parent_world_matrix;
+            public float[] render_root_world_matrix;
+            public float[] physics_in_render_matrix;
+            public float[] tracking_in_render_matrix;
+            public TrackingWorldDiagnostic[] worlds;
+        }
+
+        [Serializable]
+        private sealed class TrackingWorldDiagnostic
+        {
+            public long world_instance_id;
+            public string world_name;
+            public bool reliable;
+            public float[] world_matrix;
+            public float[] parent_world_matrix;
         }
 
         [Serializable]
@@ -139,11 +435,11 @@ namespace MixedSpace.XR
         }
 
         /// <summary>
-        /// 记录 ApplyPose 接收的 Unity 坐标矩阵，采用列优先、位置 XYZ、旋转 XYZW；无效矩阵记录 applied=false。
-        /// Records the Unity-coordinate ApplyPose matrix in column-major order with XYZ position and XYZW rotation; invalid matrices use applied=false.
+        /// 记录融合输出及实际 Transform 写入状态。有效但相同的输出仍会记录。
+        /// Records the fused pose and whether it wrote the scene transform, including valid unchanged outputs.
         /// </summary>
         internal static void AppendWorldPoseLog(MixedSpaceWorldRoot world, Matrix4x4 pose,
-            bool applied, Vector3 position, Quaternion rotation, long timestampNanoseconds,
+            bool applied, bool transformWritten, Vector3 position, Quaternion rotation, long timestampNanoseconds,
             MixedSpacePlatformPoseSample? trackingSample = null, int? fusionReturnCode = null)
         {
             try
@@ -158,9 +454,11 @@ namespace MixedSpace.XR
                     world_name = world.name,
                     matrix_column_major = matrix,
                     applied = applied,
+                    transform_written = transformWritten,
                     position = applied ? new[] { position.x, position.y, position.z } : null,
                     rotation = applied ? new[] { rotation.x, rotation.y, rotation.z, rotation.w } : null,
                     tracking = trackingSample?.IsTracking ?? false,
+                    tracking_timestamp_source = (trackingSample?.TimestampSource ?? MixedSpaceTrackingTimestampSource.Unspecified).ToString(),
                     tracking_position = trackingSample.HasValue ? new[]
                         { trackingSample.Value.Position.x, trackingSample.Value.Position.y, trackingSample.Value.Position.z } : null,
                     tracking_rotation = trackingSample.HasValue ? new[]
@@ -168,8 +466,8 @@ namespace MixedSpace.XR
                           trackingSample.Value.Rotation.z, trackingSample.Value.Rotation.w } : null,
                     fusion_return_code = fusionReturnCode ?? 0
                 };
-                File.AppendAllText(MixedSpacePoseLogFiles.GetPath("world_applied_poses.json"),
-                    JsonUtility.ToJson(entry) + Environment.NewLine);
+                MixedSpacePoseJournalWriter.Append(MixedSpacePoseLogFiles.GetPath("world_applied_poses.json"),
+                    JsonUtility.ToJson(entry));
             }
             catch (Exception exception)
             {
@@ -186,12 +484,53 @@ namespace MixedSpace.XR
             public string world_name;
             public float[] matrix_column_major;
             public bool applied;
+            public bool transform_written;
             public float[] position;
             public float[] rotation;
             public bool tracking;
+            public string tracking_timestamp_source;
             public float[] tracking_position;
             public float[] tracking_rotation;
             public int fusion_return_code;
+        }
+
+        /// <summary>
+        /// 记录传给 GetTransform 的原生列主序跟踪矩阵和纳秒时间戳，包含后续调用失败的输入。
+        /// Record the native column-major tracking matrix and nanosecond timestamp before GetTransform, including inputs to calls that fail.
+        /// </summary>
+        internal static void AppendGetTransformInput(
+            MixedSpaceWorldRoot world, long timestampNanoseconds, float[] trackingPose)
+        {
+            try
+            {
+                var entry = new PoseFusionGetTransformInput
+                {
+                    timestamp_ns = timestampNanoseconds,
+                    timestamp_ms = timestampNanoseconds / 1_000_000,
+                    world_instance_id = GetWorldLogId(world),
+                    world_name = world.name,
+                    tracking_pose_column_major = trackingPose
+                };
+                // 在通道复用跟踪缓冲区前完成序列化，异步写入只使用生成的 JSON。
+                // Serialize before the channel reuses the tracking buffer. The async writer only receives the JSON.
+                string json = JsonUtility.ToJson(entry);
+                MixedSpacePoseJournalWriter.Append(MixedSpacePoseLogFiles.GetPath("pose_fusion_get_transform.json"), json);
+            }
+            catch (Exception exception)
+            {
+                MixedSpaceLogger.LogError(
+                    $"Failed to append PoseFusionGetTransform input log: {exception.Message}");
+            }
+        }
+
+        [Serializable]
+        private sealed class PoseFusionGetTransformInput
+        {
+            public long timestamp_ns;
+            public long timestamp_ms;
+            public long world_instance_id;
+            public string world_name;
+            public float[] tracking_pose_column_major;
         }
 
         internal static void AppendLocalizationLog(
@@ -231,7 +570,7 @@ namespace MixedSpace.XR
                 };
 
                 string path = MixedSpacePoseLogFiles.GetPath(PoseFusionLogFileName);
-                File.AppendAllText(path, JsonUtility.ToJson(entry) + Environment.NewLine);
+                MixedSpacePoseJournalWriter.Append(path, JsonUtility.ToJson(entry));
             }
             catch (Exception exception)
             {

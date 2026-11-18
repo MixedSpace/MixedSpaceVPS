@@ -38,12 +38,13 @@ namespace MixedSpace.Editor
             foreach (string scenePath in context.BuildPlayerOptions.scenes ?? Array.Empty<string>())
             {
                 if (string.IsNullOrEmpty(scenePath)) continue;
-                bool usesAdapter = AssetDatabase.AssetPathToGUID(scenePath) == MixedSpaceXVXRSetupWindow.SceneGuid;
+                bool selectedSample = MixedSpaceXVXRSetupWindow.IsSampleScene(scenePath);
+                bool usesAdapter = selectedSample;
                 if (!usesAdapter)
                     foreach (string dependency in AssetDatabase.GetDependencies(scenePath, true))
                         if (AssetDatabase.AssetPathToGUID(dependency) == PlatformGuid) { usesAdapter = true; break; }
                 if (!usesAdapter) continue;
-                var issues = MixedSpaceXVXRSetupWindow.CheckDependencies();
+                var issues = MixedSpaceXVXRSetupWindow.CheckDependencies(selectedSample ? scenePath : null);
                 if (issues.Count > 0) throw new BuildFailedException("XVXR: dependencies are not ready. " + string.Join("; ", issues));
                 var configuration = MixedSpaceXVXRProjectConfigurator.CheckConfiguration();
                 if (configuration.Count > 0) throw new BuildFailedException("XVXR: check Android Player Settings and Gradle configuration. " + string.Join("; ", configuration));
@@ -58,7 +59,7 @@ namespace MixedSpace.Editor
         public void OnProcessScene(Scene scene, BuildReport report)
         {
             if (report == null || report.summary.platform != BuildTarget.Android) return;
-            bool selectedSample = AssetDatabase.AssetPathToGUID(scene.path) == MixedSpaceXVXRSetupWindow.SceneGuid;
+            bool selectedSample = MixedSpaceXVXRSetupWindow.IsSampleScene(scene.path);
             bool usesAdapter = false;
             foreach (GameObject root in scene.GetRootGameObjects())
                 foreach (MonoBehaviour component in root.GetComponentsInChildren<MonoBehaviour>(true))
@@ -68,7 +69,7 @@ namespace MixedSpace.Editor
                     if (script != null && AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(script)) == PlatformGuid) usesAdapter = true;
                 }
             if (!selectedSample && !usesAdapter) return;
-            var issues = MixedSpaceXVXRSetupWindow.CheckDependencies();
+            var issues = MixedSpaceXVXRSetupWindow.CheckDependencies(selectedSample ? scene.path : null);
             if (issues.Count > 0) throw new BuildFailedException("XVXR: dependencies are not ready. " + string.Join("; ", issues));
             if (!usesAdapter) throw new BuildFailedException("XVXR: sample platform script was not loaded. Wait for compilation/domain reload after importing dependencies.");
             if (PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Android) != ScriptingImplementation.IL2CPP ||

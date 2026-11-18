@@ -14,11 +14,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_StartAutomatically: 1
   m_WritePoseLogs: 1
+  m_PoseFusionXAxisAngleThreshold: 0
+  m_PoseFusionZAxisAngleThreshold: 0
   m_PoseFusionRefineThresholdDist: 0.2
-  m_LocalizationMode: 2
+  m_PoseFusionDiffTransThreshold: 0.5
+  m_PoseFusionRefineThresholdAngle: 1
+  m_PoseFusionDiffAngleThreshold: 5
+  m_PoseFusionEnableThreeDof: 0
+  m_LocalizationMode: 1
   m_FrameRate: 60
-  m_LimitCapture: 1
-  m_Diagnostics: 0
+  m_Diagnostics: 2
   m_Scheduling:
     m_StartWhenReady: 1
     m_CycleIntervalSeconds: 2
@@ -34,12 +39,12 @@ MonoBehaviour:
     m_CountProvidersSeparately: 0
   m_DeviceSearch:
     m_ActivationMode: 1
-    m_SolverType: 0
+    m_SolverType: 1
     m_PriorNearestNeighborCount: 0
     m_PriorRadius: 0
   m_RemoteSearch:
     m_ActivationMode: 0
-    m_SolverType: 1
+    m_SolverType: 0
     m_PriorNearestNeighborCountMin: 60
     m_PriorNearestNeighborCountMax: 720
     m_PriorScale: {x: 1, y: 1, z: 1}

@@ -18,7 +18,14 @@ namespace MixedSpace.XR
         private IntPtr m_Handle;
         private MixedSpacePoseFusionConfig m_Config = MixedSpacePoseFusionConfig.Default;
         private bool m_ReportedConfigUnavailable;
+        private bool m_SupportsAngleThresholds;
+        private bool m_ReportedAngleThresholdsUnavailable;
         private long m_NextTimestampLogTicks;
+
+        internal bool WritePoseLogs { private get; set; }
+
+        private bool ShouldTraceTimestamps => WritePoseLogs ||
+            MixedSpaceLogger.Level <= MixedSpaceLogger.LoggingLevel.Verbose;
 
         public int Initialize()
         {
@@ -27,20 +34,21 @@ namespace MixedSpace.XR
 
             try
             {
+                if (WritePoseLogs) MixedSpacePoseFusionLogFile.Initialize();
 #if UNITY_ANDROID && !UNITY_EDITOR
                 MixedSpacePoseFusionLogBridge.Register();
 #endif
+                using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
                 int status = MixedSpacePoseFusionNative.Create(out m_Handle);
                 if (status != 0) return status;
                 if (m_Handle == IntPtr.Zero) return -2;
+                m_SupportsAngleThresholds = MixedSpacePoseFusionNative.SupportsAngleThresholds();
                 status = ApplyStoredConfig();
                 if (status != 0) Dispose();
                 return status;
             }
             catch (DllNotFoundException exception)
             {
-                // 原生库不可用时返回状态码，使 World 可以回退到已求解位姿。
-                // Let the world fall back to its solved pose when the native payload is unavailable.
                 MixedSpaceLogger.LogWarning(
                     $"Pose fusion native library unavailable: {exception.Message}");
                 return -1;
@@ -52,9 +60,23 @@ namespace MixedSpace.XR
             config.Validate();
             if (m_Handle == IntPtr.Zero) return -2;
             int status;
-            try { status = MixedSpacePoseFusionNative.SetConfig(m_Handle, ref config); }
+            try
+            {
+                using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
+                status = MixedSpacePoseFusionNative.SetConfig(m_Handle, ref config, m_SupportsAngleThresholds);
+            }
             catch (EntryPointNotFoundException) { status = ConfigurationNotSupported; }
-            if (status == 0) m_Config = config;
+            if (status == 0)
+            {
+                m_Config = config;
+                if (!m_SupportsAngleThresholds && !m_ReportedAngleThresholdsUnavailable &&
+                    (config.refine_threshold_angle != MixedSpacePoseFusionConfig.Default.refine_threshold_angle ||
+                     config.diff_angle_threshold != MixedSpacePoseFusionConfig.Default.diff_angle_threshold))
+                {
+                    m_ReportedAngleThresholdsUnavailable = true;
+                    MixedSpaceLogger.LogWarning("PoseFusion 1.2.0 or later is required to apply the refine and difference angle thresholds.");
+                }
+            }
             else if (status == ConfigurationNotSupported && !m_ReportedConfigUnavailable)
             {
                 m_ReportedConfigUnavailable = true;
@@ -66,40 +88,47 @@ namespace MixedSpace.XR
         private int ApplyStoredConfig()
         {
             int status = SetConfig(m_Config);
-            // Older payloads may continue fusing, but never pretend that custom thresholds were applied.
+            // 缺少配置入口时，会话继续使用原生库默认值。
+            // The session uses native defaults when the configuration entry point is unavailable.
             return status == ConfigurationNotSupported ? 0 : status;
         }
 
         public int AddLocalization(MixedSpacePoseFusionLocalization localization)
         {
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             int status = MixedSpacePoseFusionNative.AddLocalization(m_Handle, ref localization);
-            TraceFusionTimestamp("PoseFusionAddLocalizeInfo", localization.TimestampNanoseconds, status);
+            if (ShouldTraceTimestamps)
+                TraceFusionTimestamp("PoseFusionAddLocalizeInfo", localization.TimestampNanoseconds, status);
             return status;
         }
 
         public int GetTransform(long timestampNanoseconds, float[] trackingPose, float[] outputTransform)
         {
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             int status = MixedSpacePoseFusionNative.GetTransform(
                 m_Handle,
                 timestampNanoseconds,
                 trackingPose,
                 outputTransform);
-            long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (now >= m_NextTimestampLogTicks)
+            if (ShouldTraceTimestamps)
             {
-                m_NextTimestampLogTicks = now + System.Diagnostics.Stopwatch.Frequency;
-                TraceFusionTimestamp("PoseFusionGetTransform", timestampNanoseconds, status);
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (now >= m_NextTimestampLogTicks)
+                {
+                    m_NextTimestampLogTicks = now + System.Diagnostics.Stopwatch.Frequency;
+                    TraceFusionTimestamp("PoseFusionGetTransform", timestampNanoseconds, status);
+                }
             }
             return status;
         }
 
-        private static void TraceFusionTimestamp(string api, long timestampNanoseconds, int status)
+        private void TraceFusionTimestamp(string api, long timestampNanoseconds, int status)
         {
             try
             {
                 string text = $"[TIME-CHECK] api={api} input_timestamp_ns={timestampNanoseconds} return_code={status}";
-                MixedSpacePoseFusionLogFile.Initialize();
-                MixedSpacePoseFusionLogFile.Append(2, text);
+                if (WritePoseLogs)
+                    MixedSpacePoseFusionLogFile.Append(2, text);
                 MixedSpaceLogger.Log(text, MixedSpaceLogger.LoggingLevel.Verbose, "TimestampCheck");
             }
             catch { }
@@ -108,17 +137,22 @@ namespace MixedSpace.XR
         public int Reset()
         {
             if (m_Handle == IntPtr.Zero) return 0;
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             int status = MixedSpacePoseFusionNative.Reset(m_Handle);
+            // 原生重置成功后，重新应用已保存的会话配置。
+            // Reapply the stored session configuration after a successful native reset.
             return status == 0 ? ApplyStoredConfig() : status;
         }
 
         public int ConvertUnityToNativePose(float[] unityMatrix, float[] nativePose)
         {
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             return MixedSpacePoseFusionNative.ConvertUnityToPose(unityMatrix, nativePose);
         }
 
         public int ConvertNativePoseToUnity(float[] nativePose, float[] unityMatrix)
         {
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             return MixedSpacePoseFusionNative.ConvertPoseToUnity(nativePose, unityMatrix);
         }
 
@@ -127,6 +161,7 @@ namespace MixedSpace.XR
             if (m_Handle == IntPtr.Zero)
                 return;
 
+            using var logScope = new MixedSpacePoseFusionLogBridge.FileScope(WritePoseLogs);
             MixedSpacePoseFusionNative.Destroy(m_Handle);
             m_Handle = IntPtr.Zero;
         }
@@ -151,6 +186,22 @@ namespace MixedSpace.XR
         private static readonly LogCallback Callback = Receive;
         private static readonly object Gate = new object();
         private static bool s_Attempted;
+        [ThreadStatic] private static bool s_WritePoseLogs;
+
+        // The callback has no session handle. Associate synchronous messages with the calling fusion
+        // instance, and leave callbacks outside a native call on the normal Console path.
+        internal readonly struct FileScope : IDisposable
+        {
+            private readonly bool m_Previous;
+
+            internal FileScope(bool enabled)
+            {
+                m_Previous = s_WritePoseLogs;
+                s_WritePoseLogs = enabled;
+            }
+
+            public void Dispose() => s_WritePoseLogs = m_Previous;
+        }
 
         internal static void Register()
         {
@@ -158,7 +209,6 @@ namespace MixedSpace.XR
             {
                 if (s_Attempted) return;
                 s_Attempted = true;
-                MixedSpacePoseFusionLogFile.Initialize();
                 try
                 {
                     int status = MixedSpacePoseFusionNative.SetLogCallback(Callback, IntPtr.Zero);
@@ -183,7 +233,8 @@ namespace MixedSpace.XR
             {
                 string text = Marshal.PtrToStringUTF8(message);
                 if (string.IsNullOrEmpty(text)) return;
-                MixedSpacePoseFusionLogFile.Append(level, text);
+                if (s_WritePoseLogs)
+                    MixedSpacePoseFusionLogFile.Append(level, text);
                 if (level >= 4) MixedSpaceLogger.LogError(text, "PoseFusionNative");
                 else if (level == 3) MixedSpaceLogger.LogWarning(text, "PoseFusionNative");
                 else MixedSpaceLogger.Log(text, MixedSpaceLogger.LoggingLevel.Verbose, "PoseFusionNative");
@@ -298,12 +349,70 @@ namespace MixedSpace.XR
         internal static extern int Create(out IntPtr poseFusion);
 
 #if UNITY_IOS && !UNITY_EDITOR
-        // The weak-import shim keeps older iOS static libraries linkable when SetConfig is absent.
-        [DllImport(NativeLibrary, EntryPoint = "MixedSpacePoseFusionSetConfigIfAvailable", CallingConvention = CallingConvention.Cdecl)]
+        // iOS 通过弱符号桥接调用可选入口，兼容缺少这些符号的静态库。
+        // The iOS shim uses weak imports so static libraries without these symbols still link.
+        private const string GetVersionEntryPoint = "MixedSpacePoseFusionGetVersionIfAvailable";
+        private const string SetConfigEntryPoint = "MixedSpacePoseFusionSetConfigIfAvailable";
 #else
-        [DllImport(NativeLibrary, EntryPoint = "PoseFusionSetConfig", CallingConvention = CallingConvention.Cdecl)]
+        private const string GetVersionEntryPoint = "PoseFusionGetVersion";
+        private const string SetConfigEntryPoint = "PoseFusionSetConfig";
 #endif
-        internal static extern int SetConfig(IntPtr poseFusion, ref MixedSpacePoseFusionConfig config);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeVersion
+        {
+            public int Major;
+            public int Minor;
+            public int Patch;
+        }
+
+        // 旧布局共 20 字节，3DoF 标志位于字节偏移 16；1.2.0 新增两个旋转阈值后，该偏移变为 24。
+        // The 20-byte legacy layout places 3DoF at byte offset 16. Version 1.2.0 adds two rotation thresholds, moving it to offset 24.
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct LegacyConfig
+        {
+            public float x_axis_angle_threshold;
+            public float z_axis_angle_threshold;
+            public float refine_threshold_dist;
+            public float diff_trans_threshold;
+            [MarshalAs(UnmanagedType.I1)] public bool enable_three_dof;
+        }
+
+        internal static bool SupportsAngleThresholds()
+        {
+            try
+            {
+                return GetVersion(out NativeVersion version) == 0 &&
+                    (version.Major > 1 || (version.Major == 1 && version.Minor >= 2));
+            }
+            catch (EntryPointNotFoundException) { return false; }
+        }
+
+        internal static int SetConfig(IntPtr poseFusion, ref MixedSpacePoseFusionConfig config,
+            bool supportsAngleThresholds)
+        {
+            if (supportsAngleThresholds)
+                return SetConfigV12(poseFusion, ref config);
+
+            var legacyConfig = new LegacyConfig
+            {
+                x_axis_angle_threshold = config.x_axis_angle_threshold,
+                z_axis_angle_threshold = config.z_axis_angle_threshold,
+                refine_threshold_dist = config.refine_threshold_dist,
+                diff_trans_threshold = config.diff_trans_threshold,
+                enable_three_dof = config.enable_three_dof
+            };
+            return SetLegacyConfig(poseFusion, ref legacyConfig);
+        }
+
+        [DllImport(NativeLibrary, EntryPoint = GetVersionEntryPoint, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int GetVersion(out NativeVersion version);
+
+        [DllImport(NativeLibrary, EntryPoint = SetConfigEntryPoint, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SetConfigV12(IntPtr poseFusion, ref MixedSpacePoseFusionConfig config);
+
+        [DllImport(NativeLibrary, EntryPoint = SetConfigEntryPoint, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SetLegacyConfig(IntPtr poseFusion, ref LegacyConfig config);
 
         [DllImport(NativeLibrary, EntryPoint = "PoseFusionAddLocalizeInfo", CallingConvention = CallingConvention.Cdecl)]
         internal static extern int AddLocalization(

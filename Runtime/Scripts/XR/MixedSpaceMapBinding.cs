@@ -98,6 +98,13 @@ namespace MixedSpace.XR
         public MixedSpaceMapContentPolicy ContentPolicy { get; }
         public bool IsReady { get; }
 
+        internal static bool IsRetiredKey(int key) => key >= 1000 && key <= 9999;
+
+        internal static bool HasLegacyHeader(byte[] payload) =>
+            payload != null && payload.Length >= 5 &&
+            payload[0] == 0x5d && payload[1] == 0 && payload[2] == 0 &&
+            payload[3] == 4 && payload[4] == 0;
+
         public double[] BuildMapToEcef()
         {
             double[] rotation = MixedSpaceCoordinateFrame.BuildAlignmentRotation(Alignment);

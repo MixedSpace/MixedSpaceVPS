@@ -89,48 +89,43 @@ namespace MixedSpace.XR
             MixedSpaceCaptureProfile profile = capture.Profile;
             float startedAt = m_Clock.RealtimeSinceStartup;
 
-            MixedSpaceLocalizationObservation observation;
+            MixedSpaceNativeLocalizationQuery query;
             if (m_SolverType == MixedSpaceSolverType.Prior &&
                 m_PreviouslyLocalizedMapId != 0 &&
                 m_Maps.TryResolve(
                     m_PreviouslyLocalizedMapId,
-                    out MixedSpaceMapRuntimeRecord record))
+                    out MixedSpaceMapRuntimeRecord record) &&
+                record.Output.View is MixedSpaceWorldRoot world &&
+                world && world.IsPoseReliable)
             {
+                // 用可信的 World 输出投影采集位姿，去除地图摆放变换后转为原生地图坐标。
+                // Project the capture position using the reliable World output, undo map placement, and convert to native map coordinates.
                 Vector3 position = profile.TrackerPosition;
                 Matrix4x4 mapPose = record.Output.ProjectToLocal(position, Quaternion.identity);
                 Vector3 priorPosition = record.Placement.RemovePlacement(mapPose).GetPosition();
                 priorPosition = MixedSpaceCoordinateFrame.ReflectXAxis(priorPosition);
-                MixedSpaceNativeLocalizationQuery query =
-                    MixedSpaceNativeLocalizationQuery.Around(
-                        priorPosition,
-                        m_PriorNearestNeighborCount,
-                        m_PriorRadius);
-                observation = await Task.Run(
-                    () => m_NativeCore.Localizer.Resolve(
-                        profile,
-                        pixels.Pointer,
-                        query),
-                    cancellationToken);
+                query = MixedSpaceNativeLocalizationQuery.Around(
+                    record.Definition.Key,
+                    priorPosition,
+                    m_PriorNearestNeighborCount,
+                    m_PriorRadius);
             }
             else
             {
                 m_PreviouslyLocalizedMapId = 0;
-                MixedSpaceNativeLocalizationQuery query =
-                    MixedSpaceNativeLocalizationQuery.Unconstrained(m_SolverType);
-                observation = await Task.Run(
-                    () => m_NativeCore.Localizer.Resolve(
-                        profile,
-                        pixels.Pointer,
-                        query),
-                    cancellationToken);
+                query = MixedSpaceNativeLocalizationQuery.Unconstrained(m_SolverType);
             }
+
+            MixedSpaceLocalizationObservation observation = await Task.Run(
+                () => m_NativeCore.Localizer.Resolve(profile, pixels.Pointer, query),
+                cancellationToken);
 
             float elapsed = m_Clock.RealtimeSinceStartup - startedAt;
             bool success = observation != null;
             if (success)
                 m_PreviouslyLocalizedMapId = observation.MapKey;
 
-            ReportAttempt(success, elapsed, m_Clock.RealtimeSinceStartup);
+            ReportAttempt(success, elapsed, m_Clock.RealtimeSinceStartup, profile);
 
             return success
                 ? MixedSpaceLocalizationOutcome.Located(observation)
@@ -144,7 +139,7 @@ namespace MixedSpace.XR
         /// run of misses re-reports at a low rate, and a continuing run of hits stays
         /// quiet because its transition line already proved the localizer recovered.
         /// </summary>
-        private void ReportAttempt(bool success, float elapsed, float now)
+        private void ReportAttempt(bool success, float elapsed, float now, MixedSpaceCaptureProfile profile)
         {
             bool stateChanged = !m_AttemptReported || success != m_LastAttemptSucceeded;
             m_AttemptReported = true;
@@ -162,15 +157,20 @@ namespace MixedSpace.XR
             if (stateChanged)
             {
                 m_NextMissReportAt = now + MissHeartbeatSeconds;
-                MixedSpaceLogger.Log($"Localization attempt failed after {elapsed} seconds");
+                MixedSpaceLogger.LogWarning(
+                    $"Localization attempt failed after {elapsed} seconds; solver={m_SolverType} " +
+                    $"maps=[{string.Join(",", m_MapIds.Select(map => map.id))}] " +
+                    $"image={profile.PixelWidth}x{profile.PixelHeight}x{profile.ChannelCount}.");
                 return;
             }
 
             if (now >= m_NextMissReportAt)
             {
                 m_NextMissReportAt = now + MissHeartbeatSeconds;
-                MixedSpaceLogger.Log(
-                    $"Localization still failing after {m_ConsecutiveMisses} consecutive attempts; last one took {elapsed} seconds.");
+                MixedSpaceLogger.LogWarning(
+                    $"Localization still failing after {m_ConsecutiveMisses} consecutive attempts; last one took {elapsed} seconds; " +
+                    $"solver={m_SolverType} maps=[{string.Join(",", m_MapIds.Select(map => map.id))}] " +
+                    $"image={profile.PixelWidth}x{profile.PixelHeight}x{profile.ChannelCount}.");
             }
         }
 

@@ -1,0 +1,51 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3b08bb7ac0bdc4642885654da941a185, type: 3}
+  m_Name: XREALRunPlan
+  m_EditorClassIdentifier: 
+  m_StartAutomatically: 1
+  m_WritePoseLogs: 0
+  m_LocalizationMode: 2
+  m_FrameRate: 60
+  m_Diagnostics: 2
+  m_Scheduling:
+    m_StartWhenReady: 1
+    m_CycleIntervalSeconds: 2
+    m_StartupBurstEnabled: 0
+    m_BurstFixLimit: 10
+    m_BurstDurationSeconds: 15
+    m_ReinitializeOnSuspend: 0
+    m_ResumeAfterReinitialize: 1
+    m_PublishLocalizationState: 0
+    m_ManualCycleGateEnabled: 0
+  m_Quality:
+    m_PoseRetentionSeconds: 0.5
+    m_CountProvidersSeparately: 0
+  m_DeviceSearch:
+    m_ActivationMode: 1
+    m_SolverType: 0
+    m_PriorNearestNeighborCount: 0
+    m_PriorRadius: 0
+  m_RemoteSearch:
+    m_ActivationMode: 0
+    m_SolverType: 1
+    m_PriorNearestNeighborCountMin: 60
+    m_PriorNearestNeighborCountMax: 720
+    m_PriorScale: {x: 1, y: 1, z: 1}
+    m_PriorRadius: 0
+  m_GeographicSearch:
+    m_ActivationMode: 0
+    m_SolverType: 0
+    m_PriorNearestNeighborCountMin: 60
+    m_PriorNearestNeighborCountMax: 720
+    m_PriorScale: {x: 1, y: 1, z: 1}
+    m_PriorRadius: 0

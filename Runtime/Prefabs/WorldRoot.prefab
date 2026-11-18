@@ -45,19 +45,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7e870a96aef1a4fb0b543d281fcb163e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_ProcessAlignment: 0
-  m_OutputSettings:
-    Estimation: 0
-    HistoryCapacity: 8
-    UseConfidence: 0
-    ConfidenceCeiling: 50
-    ConfidenceInfluence: 0.5
-    Interpolation: 0
-    ApproachFactor: 0.025
-    TransitionSeconds: 0.5
-    AllowWarp: 1
-    WarpDistance: 5
-    WarpAngle: 20
 --- !u!1 &3664061311184314000
 GameObject:
   m_ObjectHideFlags: 0

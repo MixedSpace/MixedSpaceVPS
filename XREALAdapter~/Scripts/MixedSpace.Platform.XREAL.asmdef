@@ -1,0 +1,7 @@
+{
+  "name": "MixedSpace.Platform.XREAL",
+  "references": [
+    "MixedSpace.Core"
+  ],
+  "autoReferenced": true
+}

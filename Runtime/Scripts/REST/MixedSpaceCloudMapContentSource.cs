@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using MixedSpace.ServiceContracts;
+using MixedSpace.XR;
 
 namespace MixedSpace.REST
 {
@@ -44,6 +45,9 @@ namespace MixedSpace.REST
 
         private string BuildUri(string endpoint, int mapKey)
         {
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapKey))
+                throw new ArgumentOutOfRangeException(nameof(mapKey), mapKey, "Four-digit maps are retired.");
+
             string server = (m_Context.LocalizationServer ?? string.Empty).TrimEnd('/');
             string token = m_Context.DeveloperToken;
             string query = string.IsNullOrEmpty(token)

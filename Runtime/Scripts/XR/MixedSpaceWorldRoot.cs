@@ -11,19 +11,8 @@ namespace MixedSpace.XR
     [AddComponentMenu("MixedSpace/World Root")]
     public sealed class MixedSpaceWorldRoot : MonoBehaviour
     {
-        [SerializeField]
-        private bool m_ProcessAlignment;
-
-        [SerializeField]
-        private MixedSpaceWorldOutputSettings m_OutputSettings = new MixedSpaceWorldOutputSettings();
-
         private Matrix4x4 m_InitialPose = Matrix4x4.identity;
-
-        public bool ProcessPoses
-        {
-            get => m_ProcessAlignment;
-            set => m_ProcessAlignment = value;
-        }
+        private Pose? m_LastWrittenPose;
 
         /// <summary>
         /// 当前世界定位是否可信；区域检测在 false 时应暂停进出判定并清空防抖计时。
@@ -31,12 +20,7 @@ namespace MixedSpace.XR
         /// </summary>
         public bool IsPoseReliable { get; internal set; }
 
-        public bool ProcessAlignment => m_ProcessAlignment;
         public Matrix4x4 InitialPose => m_InitialPose;
-
-        public MixedSpaceWorldOutputSettings OutputSettings => m_OutputSettings;
-        internal MixedSpaceWorldOutputSettings CaptureOutputSettings() =>
-            (m_OutputSettings ?? new MixedSpaceWorldOutputSettings()).Snapshot();
 
         internal Matrix4x4 CurrentPose => Matrix4x4.TRS(
             transform.position,
@@ -48,23 +32,41 @@ namespace MixedSpace.XR
             m_InitialPose = CurrentPose;
         }
 
-        internal void ApplyPose(Matrix4x4 pose, bool writePoseLog = false, long timestampNanoseconds = 0,
-            MixedSpacePlatformPoseSample? trackingSample = null, int? fusionReturnCode = null)
+        internal bool TryApplyPose(Matrix4x4 pose, out bool transformWritten, bool writePoseLog = false,
+            long timestampNanoseconds = 0, MixedSpacePlatformPoseSample? trackingSample = null,
+            int? fusionReturnCode = null)
         {
+            transformWritten = false;
             if (!TryPreparePose(pose, out Matrix4x4 prepared))
             {
                 if (writePoseLog)
-                    MixedSpaceLocalizationJournal.AppendWorldPoseLog(this, pose, false,
+                    MixedSpaceLocalizationJournal.AppendWorldPoseLog(this, pose, false, false,
                         Vector3.zero, Quaternion.identity, timestampNanoseconds, trackingSample, fusionReturnCode);
-                return;
+                return false;
             }
 
             Vector3 position = prepared.GetPosition();
             Quaternion rotation = prepared.rotation;
-            transform.SetPositionAndRotation(position, rotation);
+            Transform target = transform;
+            bool needsWrite = true;
+            if (m_LastWrittenPose.HasValue && m_LastWrittenPose.Value.position.Equals(position) &&
+                m_LastWrittenPose.Value.rotation.Equals(rotation))
+            {
+                // A parent or another component may have moved this World since the last write.
+                target.GetPositionAndRotation(out Vector3 currentPosition, out Quaternion currentRotation);
+                needsWrite = !currentPosition.Equals(position) || !currentRotation.Equals(rotation);
+            }
+
+            if (needsWrite)
+            {
+                target.SetPositionAndRotation(position, rotation);
+                m_LastWrittenPose = new Pose(position, rotation);
+                transformWritten = true;
+            }
             if (writePoseLog)
-                MixedSpaceLocalizationJournal.AppendWorldPoseLog(this, pose, true,
+                MixedSpaceLocalizationJournal.AppendWorldPoseLog(this, pose, true, transformWritten,
                     position, rotation, timestampNanoseconds, trackingSample, fusionReturnCode);
+            return true;
         }
 
         /// <summary>

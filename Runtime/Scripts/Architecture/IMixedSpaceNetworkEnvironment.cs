@@ -31,8 +31,8 @@ namespace MixedSpace
         public const string DefaultMapServer = "https://vps.njyjxr.com:18444/vpssdk/vps/proxy";
         public const string DefaultLocalizeServer = "https://vps.njyjxr.com:18444/vpssdk/vps/limitRatesVpslocalize";
         
-        public const string DefaultTestMapServer = "http://192.168.1.170/vps/proxy";
-        public const string DefaultTestLocalizeServer = "http://192.168.1.170/vps/limitRatesVpslocalize";
+        private const string LegacyTestMapServer = "http://192.168.1.170/vps/proxy";
+        private const string LegacyTestLocalizeServer = "http://192.168.1.170/vps/limitRatesVpslocalize";
         
         private readonly Func<string> m_MapServer;
         private readonly Func<string> m_LocalizeServer;
@@ -59,14 +59,15 @@ namespace MixedSpace
         public static string ResolveServer(string configured, int serverId, bool localize)
         {
             string production = localize ? DefaultLocalizeServer : DefaultMapServer;
-            string test = localize ? DefaultTestLocalizeServer : DefaultTestMapServer;
-            if (serverId != (int)MixedSpaceXrLocServer.Production && serverId != (int)MixedSpaceXrLocServer.Test)
-                throw new ArgumentOutOfRangeException(nameof(serverId), "Expected Production=0 or Test=1.");
-            // 内置端点跟随服务器环境选择，自定义端点保持不变。
-            // Built-in endpoints follow the server selection; custom endpoints are preserved.
+            string test = localize ? LegacyTestLocalizeServer : LegacyTestMapServer;
+            string remoteTest = localize
+                ? "http://61.169.107.43:1841/vps/limitRatesVpslocalize"
+                : "http://61.169.107.43:1841/vps/proxy";
+            if (serverId != 0 && serverId != 1)
+                throw new ArgumentOutOfRangeException(nameof(serverId), "SDK network requests use Production (0).");
             string value = configured?.Trim().TrimEnd('/');
-            if (string.IsNullOrEmpty(value) || value == production || value == test)
-                return serverId == (int)MixedSpaceXrLocServer.Test ? test : production;
+            if (string.IsNullOrEmpty(value) || value == production || value == test || value == remoteTest)
+                return production;
             return configured;
         }
 
@@ -90,10 +91,7 @@ namespace MixedSpace
             if (completion == null)
                 throw new ArgumentNullException(nameof(completion));
 
-            // 委托给原生验证 API，每次读取 Inspector 当前选择的 xrloc 服务器环境。
-            // Delegate authorization to the native verification API, carrying the Inspector-selected xrloc server profile
-            // (read fresh per call).
-            completion(MixedSpaceNativeAuthorization.Validate(developerToken, m_XrLocServerId()));
+            completion(MixedSpaceNativeAuthorization.Validate(developerToken));
         }
 
         public HttpRequestMessage CreateUploadRequest(string endpoint)

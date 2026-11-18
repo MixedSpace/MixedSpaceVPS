@@ -9,8 +9,8 @@ using UnityEngine;
 namespace MixedSpace
 {
     /// <summary>
-    /// 监督单运行时的验证、初始化及许可刷新，管理异步重入和部分启动规则；Unity 入口仅转发生命周期意图。
-    /// Supervises validation, initialization and entitlement refresh for one
+    /// 监督单运行时的 Token 验证和初始化，管理异步重入和部分启动规则。
+    /// Supervises token validation and initialization for one
     /// composed runtime. It owns asynchronous re-entry and partial-start rules;
     /// the Unity facade only forwards lifecycle intent.
     /// </summary>
@@ -25,7 +25,6 @@ namespace MixedSpace
         private readonly Action<MixedSpaceRuntimeState> m_ReportState;
         private readonly Action<Exception, string, bool> m_ReportError;
         private readonly Action m_ApplyFrameRate;
-        private readonly Action m_ApplyDownsampling;
         private readonly Action m_InitializationCompleted;
         private readonly Action m_ValidationCompleted;
         private readonly Action m_RuntimeReset;
@@ -36,7 +35,7 @@ namespace MixedSpace
         private readonly MixedSpaceLogger.LoggingLevel m_LoggingLevel;
         private Task m_InitializationTask;
         private LogCallback m_LogCallback;
-        private bool m_PluginCallbackRegistered;
+        private bool m_NativeLogCallbackRegistered;
 
         public MixedSpaceRuntimeSupervisor(
             MixedSpaceRuntimeComposition composition,
@@ -48,7 +47,6 @@ namespace MixedSpace
             Action<MixedSpaceRuntimeState> reportState,
             Action<Exception, string, bool> reportError,
             Action applyFrameRate,
-            Action applyDownsampling,
             Action initializationCompleted,
             Action validationCompleted,
             Action runtimeReset,
@@ -67,7 +65,6 @@ namespace MixedSpace
             m_ReportState = reportState ?? throw new ArgumentNullException(nameof(reportState));
             m_ReportError = reportError ?? throw new ArgumentNullException(nameof(reportError));
             m_ApplyFrameRate = applyFrameRate ?? throw new ArgumentNullException(nameof(applyFrameRate));
-            m_ApplyDownsampling = applyDownsampling ?? throw new ArgumentNullException(nameof(applyDownsampling));
             m_InitializationCompleted = initializationCompleted;
             m_ValidationCompleted = validationCompleted;
             m_RuntimeReset = runtimeReset;
@@ -79,13 +76,14 @@ namespace MixedSpace
         }
 
         public bool IsReady { get; private set; }
-        public int LicenseLevel { get; private set; } = -1;
-        public bool HasValidated { get; private set; }
+        public bool? TokenValidationResult { get; private set; }
         public bool InitializationRunning =>
             m_InitializationTask is { IsCompleted: false };
 
         public async void BeginValidation()
         {
+            MixedSpaceLogger.Level = m_LoggingLevel;
+            TokenValidationResult = null;
             m_ReportState(MixedSpaceRuntimeState.Validating);
             try
             {
@@ -117,34 +115,6 @@ namespace MixedSpace
 
             m_InitializationTask = InitializeCoreAsync();
             return m_InitializationTask;
-        }
-
-        public async Task RefreshLicenseAsync()
-        {
-            IMixedSpacePlatformInfo platform = m_Composition.PlatformInfo;
-            string token = m_DeveloperToken();
-            await MixedSpaceAuthCache.InstallFromStreamingAssetsAsync(token, m_LifecycleToken);
-            m_LifecycleToken.ThrowIfCancellationRequested();
-            if (platform.Kind == MixedSpacePlatformKind.IOS ||
-                platform.Kind == MixedSpacePlatformKind.Android ||
-                platform.Kind == MixedSpacePlatformKind.HarmonyOS)
-            {
-                LicenseLevel = m_Composition.NativeCore.Runtime
-                    .ResolveLicenseLevel(token);
-            }
-            else
-            {
-                LicenseLevel = await m_Composition.CloudWorkspace
-                    .GetLicenseLevelAsync(cancellationToken: m_LifecycleToken);
-            }
-
-            MixedSpaceLogger.Log(LicenseLevel >= 1 ?
-                "Enterprise License" : "Free License");
-            HasValidated = true;
-            MixedSpaceCallbackGuard.Invoke(
-                m_ValidationCompleted,
-                "UserValidationComplete");
-            m_PublishSnapshot?.Invoke();
         }
 
         public void MarkUnavailable()
@@ -191,15 +161,9 @@ namespace MixedSpace
 
                 string token = m_DeveloperToken();
                 if (!string.IsNullOrEmpty(token))
-                {
                     PlayerPrefs.SetString("token", token);
-                    _ = RefreshLicenseSafelyAsync();
-                }
 
                 m_ApplyFrameRate();
-#if !UNITY_EDITOR
-                m_ApplyDownsampling();
-#endif
                 IsReady = await m_Startup.StartAsync(
                     m_DiscoverSceneMaps(),
                     m_LifecycleToken);
@@ -256,17 +220,21 @@ namespace MixedSpace
 
             if (m_LifecycleToken.IsCancellationRequested)
                 return;
+
+            TokenValidationResult = isValid;
             if (!isValid)
             {
                 IsReady = false;
                 m_ReportError(
-                    new InvalidOperationException("MixedSpace token validation failed."),
+                    new InvalidOperationException("[TOKEN_VALIDATION_FAILED] Token 验证失败。请查看授权日志中的原生状态码。"),
                     "Validation",
                     true);
-                return;
             }
 
-            if (m_InitializeAutomatically)
+            MixedSpaceCallbackGuard.Invoke(m_ValidationCompleted, "TokenValidationCompleted");
+            m_PublishSnapshot?.Invoke();
+
+            if (isValid && m_InitializeAutomatically && !m_LifecycleToken.IsCancellationRequested)
                 BeginAutomaticInitialization();
         }
 
@@ -286,13 +254,13 @@ namespace MixedSpace
 
         private void AttachNativeLogSink()
         {
-            if (m_PluginCallbackRegistered)
+            if (m_NativeLogCallbackRegistered)
                 return;
 
             m_LogCallback = MixedSpaceNativeLogBridge.Receive;
             IntPtr callback = Marshal.GetFunctionPointerForDelegate(m_LogCallback);
             m_Composition.NativeCore.Runtime.AttachLogSink(callback);
-            m_PluginCallbackRegistered = true;
+            m_NativeLogCallbackRegistered = true;
         }
 
         /// <summary>
@@ -305,21 +273,9 @@ namespace MixedSpace
         /// </summary>
         private void ConfigureXrLocServer()
         {
-            int serverStatus = MixedSpaceXrLocNative.SetServer(m_Composition.XrLocServerId);
+            int serverStatus = MixedSpaceXrLocNative.SetServer();
             if (serverStatus != 0)
                 MixedSpaceLogger.LogWarning($"XrLoc server selection rejected: status={serverStatus}");
-        }
-
-        private async Task RefreshLicenseSafelyAsync()
-        {
-            try
-            {
-                await RefreshLicenseAsync();
-            }
-            catch (Exception exception)
-            {
-                m_ReportError(exception, "Validation", false);
-            }
         }
 
         private static void EnsureRequiredServices(MixedSpaceRuntimeSnapshot snapshot)

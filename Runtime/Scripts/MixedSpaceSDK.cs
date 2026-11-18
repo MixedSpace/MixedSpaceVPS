@@ -19,11 +19,12 @@ namespace MixedSpace
         public const string PackageVersion = "2.0.0";
 
         [SerializeField] private MixedSpaceRunPlan m_RunPlan;
+        [SerializeField, Tooltip("Display on-device logs and error popups, including token validation, localization and pose fusion.")]
+        private bool m_ShowRuntimeLogs = true;
         [SerializeField] private MixedSpaceApplicationBinding m_ApplicationBinding;
         [SerializeField] private MixedSpaceScenePorts m_ScenePorts = new MixedSpaceScenePorts();
         private MixedSpaceRuntimeConfiguration m_InstanceSettings;
         private int? m_RuntimeFrameRate;
-        private bool? m_RuntimeCaptureLimit;
 
         public MixedSpaceRunPlan RunPlan => m_RunPlan;
         // 必需的编辑期所有者；没有内嵌配置回退。
@@ -34,17 +35,14 @@ namespace MixedSpace
         [SerializeField]
         [Tooltip("SDK 开发者令牌。\nSDK developer token")]
         private string m_DeveloperToken = "";
-        [SerializeField] private string m_ServerMapLoad = MixedSpaceNetworkEnvironment.DefaultMapServer;
-        [SerializeField] private string m_ServerAddressLocalize = MixedSpaceNetworkEnvironment.DefaultLocalizeServer;
+        [SerializeField, HideInInspector] private string m_ServerMapLoad = MixedSpaceNetworkEnvironment.DefaultMapServer;
+        [SerializeField, HideInInspector] private string m_ServerAddressLocalize = MixedSpaceNetworkEnvironment.DefaultLocalizeServer;
         
-        [SerializeField]
-        [Tooltip("Production=0、Test=1；选择原生认证环境和默认 HTTP 端点。\nProduction=0, Test=1. Selects native authentication and default HTTP endpoints.")]
-        private int m_XrLocServer = (int)MixedSpaceXrLocServer.Production;
         /// <summary>
-        /// Inspector 当前选择的原生 xrloc 服务器环境。
-        /// Native xrloc server profile selected on the Inspector.
+        /// SDK 使用的原生 xrloc 正式环境。
+        /// Production xrloc server profile used by the SDK.
         /// </summary>
-        public int XrLocServer => m_XrLocServer;
+        public int XrLocServer => (int)MixedSpaceXrLocServer.Production;
 
         /// <summary>
         /// 用于验证及云请求的开发者令牌。
@@ -73,7 +71,6 @@ namespace MixedSpace
                 {
                     m_InstanceSettings = settings;
                     m_RuntimeFrameRate ??= m_RunPlan.FrameRate;
-                    m_RuntimeCaptureLimit ??= m_RunPlan.LimitCapture;
                 }
                 return settings;
             }
@@ -109,8 +106,13 @@ namespace MixedSpace
 
         public ITrackingStatus TrackingHealth => Tracking?.TrackingStatus;
         public bool IsOperational => m_Coordinator?.IsReady ?? false;
-        public int EntitlementLevel => m_Coordinator?.LicenseLevel ?? -1;
-        public bool HasEntitlementResult => m_Coordinator?.HasValidated ?? false;
+
+        /// <summary>
+        /// Token 验证结果，null 表示尚未收到结果。
+        /// Token validation result. Null means no result has been received.
+        /// </summary>
+        public bool? TokenValidationResult => m_Coordinator?.TokenValidationResult;
+        public bool HasEntitlementResult => TokenValidationResult.HasValue;
         public MixedSpaceRuntimeState RuntimeState => Diagnostics.State;
 
         /// <summary>
@@ -304,32 +306,9 @@ namespace MixedSpace
             }
         }
 
-        public bool UseCaptureResolutionLimit
-        {
-            get { _ = RuntimeConfiguration; return m_RuntimeCaptureLimit ?? m_RunPlan.LimitCapture; }
-            set
-            {
-                _ = RuntimeConfiguration;
-                m_RuntimeCaptureLimit = value;
-                ApplyImageBudgetPreference();
-            }
-        }
-
         public string CacheDirectory
         {
             get { return NetworkEnvironment.DownloadDirectory; }
-        }
-
-        private void ApplyImageBudgetPreference()
-        {
-            if (UseCaptureResolutionLimit)
-            {
-                NativeCore.Runtime.ApplyImagePixelBudget(960 * 720);
-            }
-            else
-            {
-                NativeCore.Runtime.ApplyImagePixelBudget(0);
-            }
         }
 
         private void CloseManualCycleGate()
@@ -352,8 +331,8 @@ namespace MixedSpace
         }
 
         /// <summary>
-        /// 当前许可检查完成后触发。
-        /// Raised after the current entitlement check has completed.
+        /// Token 验证返回后触发，可读取 TokenValidationResult。
+        /// Raised when token validation returns. Read TokenValidationResult for the outcome.
         /// </summary>
         public UnityEvent EntitlementResolved
         {
@@ -404,16 +383,14 @@ namespace MixedSpace
                 CloseManualCycleGate,
                   HandlePlatformTrackingLost,
                   () => m_ServerMapLoad,
-                  () => m_ServerAddressLocalize,
-                  () => (int)m_XrLocServer);
+                  () => m_ServerAddressLocalize);
 
         private MixedSpaceRuntimeDiagnostics Diagnostics =>
             m_Diagnostics ??= new MixedSpaceRuntimeDiagnostics(
                 () => m_Composition?.ExistingMapRepository,
                 () => m_Composition?.ExistingPlatformInfo,
                 () => IsOperational,
-                () => HasEntitlementResult,
-                () => EntitlementLevel,
+                () => TokenValidationResult,
                 () => SpatialSession != null,
                 () => Platform != null,
                 () => Localization != null,
@@ -443,7 +420,6 @@ namespace MixedSpace
                 SetRuntimeState,
                 ReportRuntimeError,
                 ApplyFrameRatePreference,
-                ApplyImageBudgetPreference,
                 () => RuntimeReady?.Invoke(),
                 () => EntitlementResolved?.Invoke(),
                 () => RuntimeRebuilt?.Invoke(),
@@ -475,6 +451,7 @@ namespace MixedSpace
             }
 
             m_IsPrimaryInstance = true;
+            if (m_ShowRuntimeLogs) MixedSpaceLogPanel.EnsureAvailable();
             try
             {
                 CreateRuntimeCoordinator();
@@ -587,20 +564,6 @@ namespace MixedSpace
         {
             try { await DispatchLocalizationAsync(command); }
             catch (Exception error) { ReportRuntimeError(error, "LocalizationControl", false); }
-        }
-
-        /// <summary>
-        /// 通过平台许可能力或云端服务刷新许可等级，完成后触发 EntitlementResolved。
-        /// 此方法不是开始定位操作，也不是单次定位成功通知。
-        /// Refreshes the license level using platform or cloud capabilities and raises
-        /// EntitlementResolved. This neither starts localization nor reports a successful fix.
-        /// </summary>
-        public Task RefreshLicenseAsync()
-        {
-            if (m_Coordinator == null)
-                return Task.FromException(new InvalidOperationException(
-                    "MixedSpace runtime has not reached its Awake boundary."));
-            return m_Coordinator.RefreshLicenseAsync();
         }
 
         private void ApplyFrameRatePreference()

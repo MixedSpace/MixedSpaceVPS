@@ -28,8 +28,8 @@ namespace MixedSpace.Editor
             foreach (string scene in context.BuildPlayerOptions.scenes ?? Array.Empty<string>())
             {
                 if (string.IsNullOrEmpty(scene)) continue;
-                if (AssetDatabase.AssetPathToGUID(scene) != MixedSpaceQuestSetupWindow.SceneGuid &&
-                    !AssetDatabase.GetDependencies(scene, true).Any(path => AssetDatabase.AssetPathToGUID(path) == MixedSpaceQuestSetupWindow.PlatformGuid)) continue;
+                if (!MixedSpaceQuestSetupWindow.IsSampleScene(scene) &&
+                    !AssetDatabase.GetDependencies(scene, true).Any(MixedSpaceQuestSetupWindow.IsPlatformScript)) continue;
                 Check();
                 SessionState.SetBool(BuildKey, true);
             }
@@ -46,12 +46,12 @@ namespace MixedSpace.Editor
         public void OnProcessScene(Scene scene, BuildReport report)
         {
             if (report == null || report.summary.platform != BuildTarget.Android) return;
-            bool selected = AssetDatabase.AssetPathToGUID(scene.path) == MixedSpaceQuestSetupWindow.SceneGuid;
+            bool selected = MixedSpaceQuestSetupWindow.IsSampleScene(scene.path);
             bool adapter = scene.GetRootGameObjects().SelectMany(root => root.GetComponentsInChildren<MonoBehaviour>(true))
                 .Where(component => component != null).Any(component =>
                 {
                     MonoScript script = MonoScript.FromMonoBehaviour(component);
-                    return script != null && AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(script)) == MixedSpaceQuestSetupWindow.PlatformGuid;
+                    return script != null && MixedSpaceQuestSetupWindow.IsPlatformScript(AssetDatabase.GetAssetPath(script));
                 });
             if (!selected && !adapter) return;
             Check();
@@ -75,24 +75,11 @@ namespace MixedSpace.Editor
             XmlElement root = document.DocumentElement;
             XmlElement application = root?.SelectSingleNode("application") as XmlElement;
             if (root == null || application == null) throw new BuildFailedException("Quest: generated Android Manifest is incomplete.");
-            string security = application.GetAttribute("networkSecurityConfig", Android);
-            if (!string.IsNullOrEmpty(security) && security != "@xml/network_sec_config" && security != "@xml/quest_vps_network_security")
-                throw new BuildFailedException("Quest: custom networkSecurityConfig found. Integrate the Quest test-server rule explicitly before building.");
             foreach (string permission in new[] { "android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "horizonos.permission.HEADSET_CAMERA" })
                 Ensure(document, root, "uses-permission", permission);
             foreach (string permission in new[] { "android.permission.CAMERA", "android.permission.WRITE_EXTERNAL_STORAGE" })
                 Ensure(document, root, "uses-permission", permission).SetAttribute("node", Tools, "remove");
             Ensure(document, root, "uses-feature", "com.oculus.feature.BOUNDARYLESS_APP").SetAttribute("required", Android, "true");
-            application.SetAttribute("networkSecurityConfig", Android, "@xml/quest_vps_network_security");
-            string xmlDirectory = Path.Combine(module, "src/main/res/xml");
-            Directory.CreateDirectory(xmlDirectory);
-            string xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<network-security-config>\n" +
-                "  <base-config cleartextTrafficPermitted=\"false\" />\n" +
-                "  <domain-config cleartextTrafficPermitted=\"true\">\n" +
-                "    <domain includeSubdomains=\"false\">192.168.1.170</domain>\n" +
-                "  </domain-config>\n</network-security-config>\n";
-            string network = Path.Combine(xmlDirectory, "quest_vps_network_security.xml");
-            if (!File.Exists(network) || File.ReadAllText(network) != xml) File.WriteAllText(network, xml, new UTF8Encoding(false));
             using (var output = new StringWriter())
             {
                 using (var writer = XmlWriter.Create(output, new XmlWriterSettings { Indent = true, OmitXmlDeclaration = true, NewLineChars = "\n" })) document.Save(writer);

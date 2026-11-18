@@ -6,10 +6,8 @@ namespace MixedSpace.XR
     /// <summary>
     /// Windows 编辑器与 Android ARM64 的鱼眼图像预处理，通过 XrLocUndistortFishEye 校正后再定位。
     /// 适用于使用该处理器的 Rokid、XRany 等适配器。
-    /// 不负责许可、地图状态或日志回调；定位求解仍由 MixedSpaceXrLocCore 及混合原生核心处理。
     /// Fisheye preprocessing for Windows Editor and Android ARM64, using XrLocUndistortFishEye before
-    /// localization. Used by adapters such as Rokid and XRany; licensing, maps, logs and solving remain in
-    /// MixedSpaceXrLocCore and the hybrid core.
+    /// localization. Used by adapters such as Rokid and XRany.
     /// </summary>
     public sealed class MixedSpaceXrLocFisheyeProcessor : MixedSpaceFisheyeProcessor
     {
@@ -62,8 +60,7 @@ namespace MixedSpace.XR
         }
 
         /// <summary>
-        /// Use native rectification's returned intrinsics for this exact corrected image.
-        /// Legacy authoring fields remain readable for compatibility and diagnostics only.
+        /// 校正图像并使用原生接口返回的输出内参。
         /// </summary>
         public override MixedSpaceRectifiedImage Rectify(byte[] luminance, int width, int height,
             Vector4 intrinsics, Vector4 distortion, float alpha)

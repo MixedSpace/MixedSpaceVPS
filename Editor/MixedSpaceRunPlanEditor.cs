@@ -8,6 +8,7 @@ namespace MixedSpace.EditorTools
     public sealed class MixedSpaceRunPlanEditor : UnityEditor.Editor
     {
         private bool m_Advanced;
+        private bool m_ShowPoseFusion;
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
@@ -20,10 +21,17 @@ namespace MixedSpace.EditorTools
                 EditorGUILayout.LabelField("Startup and resource budget", EditorStyles.boldLabel);
                 Draw("m_StartAutomatically", "Start Automatically");
                 Draw("m_FrameRate", "Target Frame Rate");
-                Draw("m_LimitCapture", "Limit Capture Resolution");
                 Draw("m_Diagnostics", "Diagnostics");
                 Draw("m_WritePoseLogs", "Write Pose Logs + Images");
-                Draw("m_PoseFusionRefineThresholdDist", "Pose Fusion Refine Distance (m)");
+                m_ShowPoseFusion = EditorGUILayout.Foldout(m_ShowPoseFusion, "Pose Fusion Settings", true);
+                if (m_ShowPoseFusion)
+                {
+                    using (new EditorGUI.IndentLevelScope())
+                    {
+                        Draw("m_PoseFusionRefineThresholdDist", "Refine Distance (m)");
+                        Draw("m_PoseFusionRefineThresholdAngle", "Refine Angle (°)");
+                    }
+                }
                 Draw("m_LocalizationMode", "Localization Mode");
                 Draw("m_Scheduling", "Scheduling Policy");
                 Draw("m_Quality", "Tracking Quality");

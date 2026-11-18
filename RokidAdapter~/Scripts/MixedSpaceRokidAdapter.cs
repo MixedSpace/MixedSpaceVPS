@@ -1,4 +1,4 @@
-﻿#if UNITY_EDITOR || UNITY_ANDROID
+#if UNITY_EDITOR || UNITY_ANDROID
 using System;
 using MixedSpace.XR;
 using Rokid.UXR.Module;
@@ -24,7 +24,7 @@ namespace MixedSpace.Platforms.Rokid
     /// must be granted before startup.
     /// </summary>
     [AddComponentMenu("MixedSpace/Platforms/Rokid Adapter")]
-    public sealed class MixedSpaceRokidAdapter : MixedSpaceCallbackCameraAdapter
+    public sealed class MixedSpaceRokidAdapter : MixedSpaceCallbackCameraAdapter, IMixedSpaceTrackingLossSource
     {
         /// <summary>
         /// 预览数据类型：1 为 ARGB，2 为 NV21，3 为 RGBA32。
@@ -40,21 +40,22 @@ namespace MixedSpace.Platforms.Rokid
 
         private bool m_OwnsPreview;
         private bool m_Subscribed;
+        private bool m_WasDeviceTracking;
         private bool m_HasTrackingOriginHeight;
         private float m_TrackingOriginHeight;
+
+        /// <inheritdoc />
+        public long LastTrackingLossTimestampNanoseconds { get; private set; }
 
         protected override void OpenCamera()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
                 throw new InvalidOperationException("Grant camera permission before starting the Rokid adapter.");
-            if (!NativeInterface.NativeAPI.IsSupportCamera())
-                throw new InvalidOperationException("This Rokid device does not support camera preview.");
 
             // 始终请求启动预览；VST 设备可能已有预览，重复请求由厂商接口处理。
             // Step 1: always request preview. On VST devices the runtime may already be previewing; calling it again is
             // harmless and is what the vendor sample does.
-            bool wasPreviewing = NativeInterface.NativeAPI.IsPreviewing();
             NativeInterface.NativeAPI.StartCameraPreview();
             m_OwnsPreview = true;
 
@@ -70,17 +71,6 @@ namespace MixedSpace.Platforms.Rokid
             m_Subscribed = true;
             NativeInterface.NativeAPI.SetCameraPreviewDataType(PreviewDataTypeNv21);
 
-            // 导出前几帧原始画面，便于人工核对畸变与朝向。
-            // Export the first few raw frames to inspect distortion and orientation manually.
-            SetFrameSnapshotCapture("/sdcard/Android/data/" +
-                Application.identifier + "/files/MixedSpaceFrames", 3);
-
-            // 确认预览启动与回调绑定时序。
-            // Record preview startup and callback binding order for diagnostics.
-            MixedSpaceLogger.Log(
-                $"RokidAdapter.OpenCamera: Preview started, wasPreviewing={wasPreviewing} " +
-                $"nowPreviewing={NativeInterface.NativeAPI.IsPreviewing()} " +
-                $"ownsPreview={m_OwnsPreview} dataType={PreviewDataTypeNv21} subscribed=true", MixedSpaceLogger.LoggingLevel.Verbose);
 #else
             throw new PlatformNotSupportedException("Rokid camera capture requires an Android device.");
 #endif
@@ -107,6 +97,7 @@ namespace MixedSpace.Platforms.Rokid
 
         protected override void CloseCamera()
         {
+            m_WasDeviceTracking = false;
             m_HasTrackingOriginHeight = false;
             m_TrackingOriginHeight = 0f;
             if (m_Subscribed)
@@ -123,12 +114,22 @@ namespace MixedSpace.Platforms.Rokid
                 m_OwnsPreview = false;
             }
         }
-        // 同三张现场鱼眼校正帧回放：solver 0 使用 90 度全部命中，180 度全部未命中。
-        // Three rectified on-site frames matched with solver 0 at 90 degrees and all missed at 180 degrees.
+        // 定位图像方向为 90 度。
         protected override int? NativeLocalizationImageRotationAngle => 90;
 
-        protected override bool IsDeviceTracking =>
-            NativeInterface.NativeAPI.GetHeadTrackingStatus() == HeadTrackingStatus.Tracking;
+        protected override bool IsDeviceTracking
+        {
+            get
+            {
+                bool tracking = NativeInterface.NativeAPI.GetHeadTrackingStatus() == HeadTrackingStatus.Tracking;
+                // 仅在跟踪丢失时记一次时间，使用与定位图像相同的本机单调时钟。
+                // Timestamp the transition to lost once, on the same host monotonic clock as localization captures.
+                if (m_WasDeviceTracking && !tracking)
+                    LastTrackingLossTimestampNanoseconds = HostTicksToNanoseconds(System.Diagnostics.Stopwatch.GetTimestamp());
+                m_WasDeviceTracking = tracking;
+                return tracking;
+            }
+        }
         protected override Pose ReadCurrentPose(out long timestamp)
         {
             Pose cameraPose = NativeInterface.NativeAPI.GetCameraPhysicsPose(out timestamp);
@@ -175,7 +176,7 @@ namespace MixedSpace.Platforms.Rokid
             NativeInterface.NativeAPI.GetDistortion(lens);
             intrinsics = new Vector4(focal[0], focal[1], center[0], center[1]);
 
-            // Match the legacy Rokid adapter and the vendor layout: [alpha,k1,k2,k3,k4].
+            // 畸变参数顺序为 alpha、k1、k2、k3、k4。
             distortion = new Vector4(lens[1], lens[2], lens[3], lens[4]);
             alpha = lens[0];
 

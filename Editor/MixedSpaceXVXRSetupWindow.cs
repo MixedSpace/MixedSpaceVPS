@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEngine;
@@ -16,19 +17,20 @@ namespace MixedSpace.Editor
     /// </summary>
     public sealed class MixedSpaceXVXRSetupWindow : EditorWindow
     {
-        internal const string SceneGuid = "3fdd89169e764993bcaf99ca7417d91c";
+        private const string SceneGuid = "87498c4de5e759e47893a31c263e5ea8";
+        private const string LegacySceneGuid = "3fdd89169e764993bcaf99ca7417d91c";
+        private const string LegacyCameraGuid = "9828f37c3aac403b967bc830d44664f5";
         private static readonly Dictionary<string, string> SampleScripts = new Dictionary<string, string>
         {
-            { "XVXRPlatform", "6189958b5bbd4adaad4ed9e6e9e543e3" }, { "XVXRCamera", "9828f37c3aac403b967bc830d44664f5" },
+            { "XVXRPlatform", "6189958b5bbd4adaad4ed9e6e9e543e3" }, { "XVXRCamera", "9bcab4c22e54fba4e89e596fd7988a80" },
             { "LocalizationStatus", "851280af666948c8b59dcfe06d79477a" }, { "PoseIndicator", "dcc6ea890e3741be869245e9e3b1cde7" }
         };
+        private int m_VisibleIssues;
         private Vector2 m_Scroll;
         private string m_Message;
         private bool m_Error;
         private readonly List<string> m_Issues = new List<string>();
         private readonly List<string> m_ConfigurationIssues = new List<string>();
-        private readonly List<MixedSpaceXVXRDependencyInstaller.DependencyGroup> m_MissingGroups =
-            new List<MixedSpaceXVXRDependencyInstaller.DependencyGroup>();
         private double m_NextCheck;
 
         [MenuItem("MixedSpaceSDK/Adapters/XVXR 设置与依赖检查")]
@@ -52,7 +54,26 @@ namespace MixedSpace.Editor
             if (!Application.isBatchMode) Open();
         }
 
-        internal static bool SampleImported => AssetDatabase.GUIDToAssetPath(SceneGuid).StartsWith("Assets/", StringComparison.Ordinal);
+        internal static bool SampleImported => FindImportedScene() != null;
+
+        private static string FindImportedScene()
+        {
+            string path = AssetDatabase.GUIDToAssetPath(SceneGuid);
+            if (IsProjectScene(path)) return path;
+
+            path = AssetDatabase.GUIDToAssetPath(LegacySceneGuid);
+            return IsProjectScene(path) ? path : null;
+        }
+
+        private static bool IsProjectScene(string path) =>
+            path.StartsWith("Assets/", StringComparison.Ordinal) &&
+            AssetDatabase.LoadAssetAtPath<SceneAsset>(path) != null;
+
+        internal static bool IsSampleScene(string path)
+        {
+            string guid = AssetDatabase.AssetPathToGUID(path);
+            return guid == SceneGuid || guid == LegacySceneGuid;
+        }
 
         internal static Type FindType(string name)
         {
@@ -64,15 +85,19 @@ namespace MixedSpace.Editor
             return null;
         }
 
-        internal static List<string> CheckDependencies()
+        internal static List<string> CheckDependencies(string scenePath = null)
         {
             var issues = new List<string>();
-            if (!SampleImported) { issues.Add("请先通过 Package Manager 导入 XVXRAdapter sample。"); return issues; }
+            scenePath = scenePath ?? FindImportedScene();
+            if (scenePath == null) { issues.Add("请先通过 Package Manager 导入 XVXRAdapter 示例。"); return issues; }
+            bool legacyScene = AssetDatabase.AssetPathToGUID(scenePath) == LegacySceneGuid;
             foreach (KeyValuePair<string, string> script in SampleScripts)
+            {
+                string expectedGuid = legacyScene && script.Key == "XVXRCamera" ? LegacyCameraGuid : script.Value;
                 foreach (string guid in AssetDatabase.FindAssets(script.Key + " t:MonoScript", new[] { "Assets" }))
                 {
                     string path = AssetDatabase.GUIDToAssetPath(guid);
-                    if (Path.GetFileNameWithoutExtension(path) == script.Key && guid != script.Value)
+                    if (Path.GetFileNameWithoutExtension(path) == script.Key && guid != expectedGuid)
                     {
                         Type candidate = AssetDatabase.LoadAssetAtPath<MonoScript>(path)?.GetClass();
                         string expectedNamespace = script.Key == "XVXRPlatform" || script.Key == "XVXRCamera"
@@ -82,6 +107,7 @@ namespace MixedSpace.Editor
                         issues.Add("检测到同名旧示例：" + path + "。请在独立工程使用新 sample。");
                     }
                 }
+            }
             Type api = FindType("API");
             if (api == null) issues.Add("缺少厂商 API 源码。");
             else
@@ -93,23 +119,43 @@ namespace MixedSpace.Editor
             if (deviceManager != null && deviceManager.Assembly.GetName().Name != "Assembly-CSharp") issues.Add("内部 XvDeviceManager 必须与适配器同属 Assembly-CSharp。");
             foreach (string name in new[] { "XvXR.Engine.XvXRManager", "XvXR.Engine.XvXRHeadTracking", "XvXR.Engine.XvDeviceManager", "Microsoft.MixedReality.Toolkit.MixedRealityToolkit" })
                 if (FindType(name) == null) issues.Add("缺少类型：" + name);
-            try
+            if (string.IsNullOrEmpty(AssetDatabase.GUIDToAssetPath("8f586378b4e144a9851e7b34d9b748ee")))
+                issues.Add("缺少 TMP 示例字体，请通过 Window/TextMeshPro/Import TMP Essential Resources 导入。");
+            // Inspect the imported scene and its serialized dependencies instead of a bundled manifest.
+            var visited = new HashSet<string>();
+            var pending = new Queue<string>();
+            pending.Enqueue(scenePath);
+            while (pending.Count > 0)
             {
-                var manifest = MixedSpaceXVXRDependencyInstaller.ReadManifest();
-                foreach (var reference in manifest.requiredGuids)
-                    if (string.IsNullOrEmpty(AssetDatabase.GUIDToAssetPath(reference.guid))) issues.Add("缺少场景资源：" + reference.path);
-                foreach (var file in manifest.files)
+                string path = pending.Dequeue();
+                if (!visited.Add(path) || !File.Exists(path)) continue;
+                string extension = Path.GetExtension(path).ToLowerInvariant();
+                if (extension != ".unity" && extension != ".prefab" && extension != ".asset" && extension != ".mat") continue;
+                foreach (Match match in Regex.Matches(File.ReadAllText(path), @"guid: ([0-9a-f]{32})"))
                 {
-                    string extension = Path.GetExtension(file.path).ToLowerInvariant();
-                    if (extension != ".aar" && extension != ".so") continue;
-                    string path = AssetDatabase.GUIDToAssetPath(file.guid);
-                    var importer = AssetImporter.GetAtPath(path) as PluginImporter;
-                    if (importer == null || !importer.GetCompatibleWithPlatform(BuildTarget.Android)) issues.Add("缺少或禁用 Android 插件：" + file.path);
-                    else if (extension == ".so" && file.path.Contains("arm64-v8a/") && importer.GetPlatformData(BuildTarget.Android, "CPU") != "ARM64")
-                        issues.Add("原生插件未配置 ARM64：" + path);
+                    string guid = match.Groups[1].Value;
+                    if (guid.StartsWith("0000000000000000", StringComparison.Ordinal)) continue;
+                    string dependency = AssetDatabase.GUIDToAssetPath(guid);
+                    if (string.IsNullOrEmpty(dependency)) issues.Add("缺少场景资源：" + guid + "（引用位置：" + path + "）。请导入配套 XVisio SDK / MRTK / TMP 资源。");
+                    else pending.Enqueue(dependency);
                 }
             }
-            catch (Exception exception) { issues.Add(exception.Message); }
+            foreach (string name in new[] { "xvxrlib-release.aar", "xvsdk-release.aar", "libxv-wrapper.so" })
+            {
+                bool found = false;
+                foreach (string guid in AssetDatabase.FindAssets(Path.GetFileNameWithoutExtension(name)))
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (Path.GetFileName(path) != name) continue;
+                    found = true;
+                    var importer = AssetImporter.GetAtPath(path) as PluginImporter;
+                    if (importer == null || !importer.GetCompatibleWithPlatform(BuildTarget.Android))
+                        issues.Add("Android 插件未启用：" + path);
+                    else if (name.EndsWith(".so", StringComparison.Ordinal) && importer.GetPlatformData(BuildTarget.Android, "CPU") != "ARM64")
+                        issues.Add("原生插件未配置 ARM64：" + path);
+                }
+                if (!found) issues.Add("缺少厂商 Android 插件：" + name + "，请手动导入配套 XVisio SDK。");
+            }
             return issues;
         }
 
@@ -122,12 +168,10 @@ namespace MixedSpace.Editor
                 m_NextCheck = EditorApplication.timeSinceStartup + 2;
                 m_Issues.Clear();
                 m_ConfigurationIssues.Clear();
-                m_MissingGroups.Clear();
                 if (SampleImported)
                     try
                     {
-                        m_MissingGroups.AddRange(MixedSpaceXVXRDependencyInstaller.MissingGroups());
-                        if (m_MissingGroups.Count == 0) m_Issues.AddRange(CheckDependencies());
+                        m_Issues.AddRange(CheckDependencies());
                         m_ConfigurationIssues.AddRange(MixedSpaceXVXRProjectConfigurator.CheckConfiguration());
                     }
                     catch (Exception exception) { m_Issues.Add(exception.Message); }
@@ -140,27 +184,15 @@ namespace MixedSpace.Editor
             bool busy = EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlaying ||
                 MixedSpaceXVXRProjectConfigurator.IsRunning;
             EditorGUILayout.LabelField("待处理项目", EditorStyles.boldLabel);
-            using (new EditorGUI.DisabledScope(busy || !SampleImported || m_MissingGroups.Count > 0 || m_Issues.Count > 0))
-                if (GUILayout.Button("Fix All · 一键修复项目配置", GUILayout.Height(30)))
-                {
-                    Run(MixedSpaceXVXRProjectConfigurator.BeginSetup);
-                    GUIUtility.ExitGUI();
-                }
-            if (m_MissingGroups.Count > 0) EditorGUILayout.LabelField("先用各项 Fix 导入依赖，再使用 Fix All 配置工程。", EditorStyles.wordWrappedMiniLabel);
+            m_VisibleIssues = 0;
+            if (!SampleImported || m_Issues.Count > 0)
+                EditorGUILayout.HelpBox("请自行导入配套 XVisio SDK 和 MRTK；TMP 资源使用 Unity 的标准导入入口。依赖就绪后可配置工程。", MessageType.Info);
             m_Scroll = EditorGUILayout.BeginScrollView(m_Scroll);
             if (!SampleImported) EditorGUILayout.LabelField("请先导入 XVXRAdapter 示例。");
             else if (busy) EditorGUILayout.LabelField("请等待导入或编译完成。");
-            else if (m_MissingGroups.Count == 0 && m_Issues.Count == 0 && m_ConfigurationIssues.Count == 0)
-                EditorGUILayout.LabelField("当前检测项已通过。");
-            foreach (var group in m_MissingGroups)
-            {
-                string name = group == MixedSpaceXVXRDependencyInstaller.DependencyGroup.MRTK ? "MRTK" :
-                    group == MixedSpaceXVXRDependencyInstaller.DependencyGroup.TextMeshPro ? "TMP 资源" : "XVisio SDK";
-                bool needsMrtk = group == MixedSpaceXVXRDependencyInstaller.DependencyGroup.XVisio &&
-                    m_MissingGroups.Contains(MixedSpaceXVXRDependencyInstaller.DependencyGroup.MRTK);
-                Issue(name, needsMrtk ? "先导入 MRTK。" : string.Empty, "导入",
-                    () => MixedSpaceXVXRDependencyInstaller.ImportMissing(group), busy || needsMrtk);
-            }
+            using (new EditorGUI.DisabledScope(busy || !SampleImported))
+                if (string.IsNullOrEmpty(AssetDatabase.GUIDToAssetPath("8f586378b4e144a9851e7b34d9b748ee")) && GUILayout.Button("导入 TMP Essential Resources"))
+                    Run(() => EditorApplication.ExecuteMenuItem("Window/TextMeshPro/Import TMP Essential Resources"));
             if (SampleImported)
             {
 #if UNITY_ANDROID
@@ -199,10 +231,17 @@ namespace MixedSpace.Editor
                         PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
                         PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.OpenGLES3 });
                     }, busy);
-                if (m_ConfigurationIssues.Count > 0)
-                    Issue("工程配置", "Android / SDK / Gradle", "配置工程", MixedSpaceXVXRProjectConfigurator.BeginSetup,
-                        busy || m_MissingGroups.Count > 0 || m_Issues.Count > 0);
+                foreach (string issue in m_ConfigurationIssues)
+                    EditorGUILayout.LabelField(issue, EditorStyles.wordWrappedLabel);
             }
+            using (new EditorGUI.DisabledScope(busy || !SampleImported || m_Issues.Count > 0))
+                if (MixedSpaceSampleSetup.FixAllButton(m_VisibleIssues + m_ConfigurationIssues.Count))
+                {
+                    Run(MixedSpaceXVXRProjectConfigurator.BeginSetup);
+                    GUIUtility.ExitGUI();
+                }
+            if (!busy && SampleImported && m_Issues.Count == 0 && m_ConfigurationIssues.Count == 0 && m_VisibleIssues == 0)
+                EditorGUILayout.HelpBox(MixedSpaceSampleSetup.ReadyMessage, MessageType.Info);
             if (m_Issues.Count > 0) EditorGUILayout.HelpBox(m_Issues[0], MessageType.Error);
             string message = !string.IsNullOrEmpty(m_Message) ? m_Message : MixedSpaceXVXRProjectConfigurator.StatusMessage;
             bool error = !string.IsNullOrEmpty(m_Message) ? m_Error : MixedSpaceXVXRProjectConfigurator.HasError;
@@ -212,6 +251,7 @@ namespace MixedSpace.Editor
 
         private void Issue(string title, string detail, string button, Action action, bool disabled, MessageType severity = MessageType.Error)
         {
+            m_VisibleIssues++;
             if (MixedSpaceSampleSetup.IssueRow(title, detail, severity, button.StartsWith("打开") ? "打开" : "Fix", disabled))
             {
                 Run(action);

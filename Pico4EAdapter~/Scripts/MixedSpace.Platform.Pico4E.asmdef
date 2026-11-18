@@ -1,0 +1,13 @@
+{
+    "name": "MixedSpace.Platform.Pico4E",
+    "references": [
+        "MixedSpace.Core",
+        "PICO.TobSupport",
+        "Unity.XR.PICO"
+    ],
+    "includePlatforms": [],
+    "autoReferenced": true,
+    "excludePlatforms": [],
+    "defineConstraints": [],
+    "versionDefines": []
+}

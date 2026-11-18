@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,18 +8,20 @@ namespace MixedSpace.XR
 {
     /// <summary>
     /// 回调式相机共用的生命周期与帧资源管理，接受紧密排列的 NV21 或单通道亮度数据。
-    /// 设备 API 由子类实现；图像与实时位姿时间戳应使用一致的单调时钟，
-    /// 并通过显式单位配置换算为纳秒，不能通过数值大小猜测单位。
-    /// Shared lifecycle and frame ownership for callback cameras accepting tightly packed NV21 or
-    /// luminance data. Subclasses own device APIs. Capture and live-pose timestamps should share a monotonic clock
-    /// and use explicitly configured units when converted to nanoseconds.
+    /// 图像回调和实时位姿默认使用同一个系统单调时钟，历史位姿查询使用原始图像时间戳。
+    /// Shared lifecycle and frame ownership for callback cameras accepting tightly packed NV21 or luminance data.
+    /// Image callbacks and live pose reads use a shared host monotonic clock by default.
+    /// Vendor history lookups use the original image timestamp.
     /// </summary>
     public abstract class MixedSpaceCallbackCameraAdapter : MonoBehaviour, IMixedSpacePlatformAdapter, IMixedSpaceCaptureDiagnostics
     {
-        public enum TimestampUnit { Unconfirmed, Nanoseconds, Microseconds, Milliseconds }
+        public enum TimestampUnit { Unconfirmed, Nanoseconds, Microseconds, Milliseconds, Auto }
         [SerializeField] private MixedSpaceRokidProfile m_Profile;
         private MixedSpaceFisheyeProcessor m_FisheyeProcessor;
         private TimestampUnit m_TimestampUnit;
+        private TimestampUnit m_ExpectedTimestampUnit;
+        private readonly MixedSpaceTimestampUnitDetector m_ImageClock = new MixedSpaceTimestampUnitDetector(Stopwatch.Frequency);
+        private readonly MixedSpaceTimestampUnitDetector m_PoseClock = new MixedSpaceTimestampUnitDetector(Stopwatch.Frequency);
         private int m_StartupTimeoutMilliseconds;
         private int m_MaxFrameAgeMilliseconds;
         private Vector3 m_ImageOrientationEuler;
@@ -31,146 +32,19 @@ namespace MixedSpace.XR
         private bool m_Opened;
         private bool m_Ready;
         private int m_Generation;
-        private long m_ConsumedTimestamp = long.MinValue;
+        private long m_ConsumedFrameReceivedAt = long.MinValue;
         private Task<bool> m_Starting;
         private bool m_Paused;
         private bool m_ResumeRequested;
         private bool m_WritePoseLogs;
+        private float m_NextTrackingDiagnosticTime;
         private readonly TimestampProbe m_CaptureTimestampProbe = new TimestampProbe();
         private readonly TimestampProbe m_LiveTimestampProbe = new TimestampProbe();
-        // 帧快照导出：用于人工核对相机原始画面。
-        // Frame snapshots for manual inspection of raw camera images.
-        private int m_DebugSnapshotRemaining;
-        private string m_DebugSnapshotDirectory;
-        // 相机线程只入队，Unity 线程在 Update 里落盘（Texture2D 是主线程 API）。
-        // The camera thread only queues data; Unity Update writes files because Texture2D requires the main thread.
-        private Queue<SnapshotRequest> m_SnapshotQueue;
-        private const int SnapshotQueueLimit = 4;
+        protected bool WritePoseLogs => m_WritePoseLogs;
 
-        public void SetWritePoseLogs(bool enabled) => m_WritePoseLogs = enabled;
-
-        /// <summary>
-        /// 将后续至多 <paramref name="count"/> 张 NV21 回调图像加入快照导出队列，
-        /// 保存到 <paramref name="directory"/>，包含原始数据和亮度 PNG。
-        /// 队列已满时不接收该帧；导出不改变调度策略，但复制和主线程落盘会产生诊断开销。
-        /// 单通道 ReceiveLuminance 路径不使用此快照队列。
-        /// Queues up to count subsequent NV21 frames for raw-data and luminance-PNG export to directory.
-        /// Full queues skip frames. Export preserves scheduling policy but adds copying and main-thread I/O overhead.
-        /// ReceiveLuminance does not use this queue.
-        /// </summary>
-        public void SetFrameSnapshotCapture(string directory, int count)
+        public void SetWritePoseLogs(bool enabled)
         {
-            m_DebugSnapshotDirectory = directory;
-            m_DebugSnapshotRemaining = Mathf.Max(0, count);
-            MixedSpaceLogger.Log(
-                $"Frame snapshot capture configured: dir={directory} count={m_DebugSnapshotRemaining}", MixedSpaceLogger.LoggingLevel.Verbose);
-        }
-
-        /// <summary>
-        /// 相机回调侧复制原始数据和亮度数据并入队，不调用 Unity 对象 API 或写文件。
-        /// Texture2D 创建和 PNG 编码等操作交给主线程 Update 执行。
-        /// Copies raw and luminance data on the camera callback thread without Unity object APIs or file
-        /// I/O. Main-thread Update creates textures and encodes PNGs.
-        /// </summary>
-        private void QueueFrameSnapshot(byte[] pixels, int width, int height, long timestamp)
-        {
-            if (string.IsNullOrEmpty(m_DebugSnapshotDirectory)) return;
-
-            // 先预留队列名额，避免约 50 fps 的相机回调快于 Update 时不断积压图像缓冲区。
-            // Reserve a slot first: the camera pushes ~50 fps and Update runs at frame rate, so without this the queue would
-            // grow unboundedly and retain hundreds of buffers.
-            lock (m_Gate)
-            {
-                if (m_DebugSnapshotRemaining <= 0) return;
-                if (m_SnapshotQueue == null) m_SnapshotQueue = new Queue<SnapshotRequest>(4);
-                if (m_SnapshotQueue.Count >= SnapshotQueueLimit) return;
-                m_DebugSnapshotRemaining--;
-            }
-
-            int count = checked(width * height);
-            var luminance = new byte[count];
-            Buffer.BlockCopy(pixels, 0, luminance, 0, count);
-            var request = new SnapshotRequest
-            {
-                Luminance = luminance,
-                Raw = (byte[])pixels.Clone(),
-                Width = width,
-                Height = height,
-                Timestamp = timestamp
-            };
-
-            lock (m_Gate) { m_SnapshotQueue.Enqueue(request); }
-        }
-
-        /// <summary>
-        /// 主线程消费快照队列，每次最多处理 SnapshotQueueLimit 项。
-        /// 先保存原始 NV21 数据，再生成便于查看的亮度 PNG。
-        /// Drains at most SnapshotQueueLimit items on the main thread, saving raw NV21 before producing
-        /// luminance PNG previews.
-        /// </summary>
-        private void DrainFrameSnapshot()
-        {
-            int drained = 0;
-            while (true)
-            {
-                SnapshotRequest request;
-                lock (m_Gate)
-                {
-                    if (m_SnapshotQueue == null || m_SnapshotQueue.Count == 0) return;
-                    request = m_SnapshotQueue.Dequeue();
-                }
-                WriteFrameSnapshot(request);
-                // 限制每帧处理量，避免积压阻塞 Unity 主线程。
-                // Bound the work per frame so a backlog cannot stall the Unity thread.
-                if (++drained >= SnapshotQueueLimit) return;
-            }
-        }
-
-        private void WriteFrameSnapshot(SnapshotRequest request)
-        {
-            try
-            {
-                System.IO.Directory.CreateDirectory(m_DebugSnapshotDirectory);
-                string stem = System.IO.Path.Combine(m_DebugSnapshotDirectory,
-                    $"frame_{request.Timestamp}_{request.Width}x{request.Height}");
-
-                // 保留完整的厂商原始布局，供逐字节检查。
-                // Untrimmed vendor layout, preserved for byte-level inspection.
-                System.IO.File.WriteAllBytes(stem + ".nv21", request.Raw);
-
-                // PNG 仅使用 Y 平面，缓冲区长度必须为 width*height 字节。
-                // Use only the Y plane for PNG previews; the buffer must contain exactly width*height bytes.
-                var texture = new Texture2D(request.Width, request.Height, TextureFormat.Alpha8, false);
-                try
-                {
-                    texture.LoadRawTextureData(request.Luminance);
-                    texture.Apply();
-                    byte[] png = texture.EncodeToPNG();
-                    if (png != null) System.IO.File.WriteAllBytes(stem + ".png", png);
-                }
-                finally
-                {
-                    UnityEngine.Object.Destroy(texture);
-                }
-
-                MixedSpaceLogger.Log($"Frame snapshot saved: {stem}.png / .nv21", MixedSpaceLogger.LoggingLevel.Verbose);
-            }
-            catch (Exception exception)
-            {
-                MixedSpaceLogger.LogError($"Frame snapshot export failed: {exception.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 相机线程与 Unity 线程之间的交接记录。
-        /// Hand-off record between the camera thread and the Unity thread.
-        /// </summary>
-        private sealed class SnapshotRequest
-        {
-            public byte[] Luminance;
-            public byte[] Raw;
-            public int Width, Height;
-            public long Timestamp;
+            lock (m_Gate) m_WritePoseLogs = enabled;
         }
 
         /// <summary>
@@ -181,7 +55,8 @@ namespace MixedSpace.XR
         {
             if (!m_Profile) throw new InvalidOperationException("Assign DefaultRokidProfile to the Rokid adapter.");
             var settings = m_Profile.CreateSettings();
-            if (!Enum.IsDefined(typeof(TimestampUnit), settings.TimestampUnit) || settings.TimestampUnit == TimestampUnit.Unconfirmed)
+            if (!UseHostMonotonicTimestamps &&
+                (!Enum.IsDefined(typeof(TimestampUnit), settings.TimestampUnit) || settings.TimestampUnit == TimestampUnit.Unconfirmed))
                 throw new InvalidOperationException("Confirm device timestamp units before enabling camera fusion.");
             if (settings.StartupTimeoutMilliseconds <= 0 || settings.MaxFrameAgeMilliseconds <= 0)
                 throw new InvalidOperationException("Camera timeout and maximum frame age must be positive.");
@@ -205,6 +80,12 @@ namespace MixedSpace.XR
         /// </summary>
         protected virtual int? NativeLocalizationImageRotationAngle => null;
 
+        /// <summary>
+        /// 默认使用本机单调时钟：图像取回调到达时间，实时位姿取读取完成时间。
+        /// By default, the host monotonic clock timestamps images at callback arrival and live poses after the read.
+        /// </summary>
+        protected virtual bool UseHostMonotonicTimestamps => true;
+
         protected abstract bool IsDeviceTracking { get; }
         protected abstract Pose ReadCurrentPose(out long timestamp);
         protected abstract Pose ReadCapturePose(long timestamp);
@@ -227,15 +108,16 @@ namespace MixedSpace.XR
                 return;
             lock (m_Gate)
             {
-                if (!m_Accepting || (m_Latest != null && timestamp <= m_Latest.DeviceTime)) return;
+                long receivedAt = Stopwatch.GetTimestamp();
+                if (!m_Accepting ||
+                    (!UseHostMonotonicTimestamps && !m_ImageClock.Observe(timestamp, receivedAt))) return;
                 var copy = new byte[(int)count];
                 Buffer.BlockCopy(pixels, 0, copy, 0, copy.Length);
                 m_Latest = new Frame { Pixels = copy, Width = width, Height = height,
-                    DeviceTime = timestamp, ReceivedAt = Stopwatch.GetTimestamp() };
+                    DeviceTime = timestamp, ReceivedAt = receivedAt };
             }
             // 帧快照：仅入队，落盘由 Update() 在 Unity 线程完成。
             // Snapshots only enqueue here; Unity-thread Update writes them to disk.
-            QueueFrameSnapshot(pixels, width, height, timestamp);
         }
 
         /// <summary>
@@ -249,21 +131,27 @@ namespace MixedSpace.XR
             if (count > int.MaxValue || pixels.LongLength != count) return;
             lock (m_Gate)
             {
-                if (!m_Accepting || (m_Latest != null && timestamp <= m_Latest.DeviceTime)) return;
+                long receivedAt = Stopwatch.GetTimestamp();
+                if (!m_Accepting ||
+                    (!UseHostMonotonicTimestamps && !m_ImageClock.Observe(timestamp, receivedAt))) return;
                 var copy = new byte[(int)count];
                 Buffer.BlockCopy(pixels, 0, copy, 0, copy.Length);
                 m_Latest = new Frame { Pixels = copy, Width = width, Height = height,
-                    DeviceTime = timestamp, ReceivedAt = Stopwatch.GetTimestamp() };
+                    DeviceTime = timestamp, ReceivedAt = receivedAt };
             }
         }
-        /// <summary>
-        /// 快照导出的 Unity 主线程部分；相机线程不操作 Texture2D，只交接帧，由此消费队列。
-        /// Unity-thread half of the snapshot export. The camera thread cannot touch
-        /// Texture2D, so it hands frames over and this drains them.
-        /// </summary>
-        private void Update()
+        // 在常规跟踪更新之后，对照物理相机与 Unity 相机；仅诊断，不写任何场景位姿。
+        // Compare physical and Unity camera poses after Update without moving scene objects.
+        private void LateUpdate()
         {
-            DrainFrameSnapshot();
+            if (!m_WritePoseLogs || !m_Ready || !isActiveAndEnabled ||
+                Time.realtimeSinceStartup < m_NextTrackingDiagnosticTime) return;
+            m_NextTrackingDiagnosticTime = Time.realtimeSinceStartup + 0.2f;
+            try { MixedSpaceLocalizationJournal.AppendTrackingDiagnostic(SamplePose()); }
+            catch (Exception error)
+            {
+                MixedSpaceLogger.LogError("Tracking diagnostic failed (" + error.GetType().Name + ").");
+            }
         }
 
         public Task<bool> StartAsync(CancellationToken cancellationToken)
@@ -280,7 +168,8 @@ namespace MixedSpace.XR
         {
             ValidateConfiguration();
             var settings = m_Profile.CreateSettings();
-            m_TimestampUnit = settings.TimestampUnit;
+            m_ExpectedTimestampUnit = settings.TimestampUnit;
+            m_TimestampUnit = UseHostMonotonicTimestamps ? TimestampUnit.Nanoseconds : TimestampUnit.Unconfirmed;
             m_StartupTimeoutMilliseconds = settings.StartupTimeoutMilliseconds;
             m_MaxFrameAgeMilliseconds = settings.MaxFrameAgeMilliseconds;
             m_ImageOrientationEuler = settings.ImageOrientationEuler;
@@ -290,18 +179,34 @@ namespace MixedSpace.XR
             long started = Stopwatch.GetTimestamp();
             try
             {
-                lock (m_Gate) { m_Latest = null; m_Accepting = true; }
-                m_ConsumedTimestamp = long.MinValue;
+                lock (m_Gate)
+                {
+                    m_Latest = null;
+                    m_ImageClock.Reset();
+                    m_PoseClock.Reset();
+                    m_Accepting = true;
+                }
+                m_CaptureTimestampProbe.Reset();
+                m_LiveTimestampProbe.Reset();
+                m_ConsumedFrameReceivedAt = long.MinValue;
                 m_Opened = true; // CloseCamera 也必须清理只完成一部分的 OpenCamera。 / CloseCamera must also unwind a partially completed OpenCamera.
                 OpenCamera();
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
                     if (generation != m_Generation) throw new OperationCanceledException("Camera startup was stopped.");
-                    lock (m_Gate)
-                        if (m_Latest != null) { m_Ready = true; return true; }
+                    if (IsReadyToCapture())
+                    {
+                        m_Ready = true;
+                        return true;
+                    }
+
                     if (ElapsedMilliseconds(started) >= m_StartupTimeoutMilliseconds)
-                        throw new TimeoutException("Camera did not provide a valid packed NV21 frame before timeout.");
+                    {
+                        throw new TimeoutException(UseHostMonotonicTimestamps
+                            ? "Camera startup timed out waiting for valid frames and tracking."
+                            : "Camera startup timed out waiting for valid frames, tracking and consistent timestamp units.");
+                    }
                     await Task.Delay(25, token);
                 }
             }
@@ -310,6 +215,19 @@ namespace MixedSpace.XR
                 if (generation == m_Generation) await ShutdownAsync();
                 throw;
             }
+        }
+
+        private bool IsReadyToCapture()
+        {
+            bool tracking = IsDeviceTracking;
+            if (UseHostMonotonicTimestamps)
+            {
+                lock (m_Gate) return tracking && m_Latest != null;
+            }
+
+            if (tracking) ObserveCurrentPose(out _, out _, out _, out _);
+            EnsureTimestampClocksHealthy();
+            return TryConfirmTimestampUnit();
         }
 
         public Task<IMixedSpacePlatformFrame> CaptureFrameAsync(CancellationToken token)
@@ -323,10 +241,11 @@ namespace MixedSpace.XR
                 return Task.FromResult<IMixedSpacePlatformFrame>(
                     new MixedSpacePlatformFrame(new MixedSpaceTrackingSnapshot(0), null));
             }
+            EnsureTimestampClocksHealthy();
             bool tracking = IsDeviceTracking;
             Frame frame;
             lock (m_Gate) frame = m_Latest;
-            if (!tracking || frame == null || frame.DeviceTime == m_ConsumedTimestamp ||
+            if (!tracking || frame == null || frame.ReceivedAt == m_ConsumedFrameReceivedAt ||
                 ElapsedMilliseconds(frame.ReceivedAt) > m_MaxFrameAgeMilliseconds)
             {
 
@@ -335,6 +254,8 @@ namespace MixedSpace.XR
             }
 
 
+            // 设备的历史位姿仍以图像的原始设备时间戳查询。
+            // Look up the vendor pose history with the original camera timestamp.
             Pose pose = ReadCapturePose(frame.DeviceTime);
             ValidatePose(pose);
             ReadCalibration(out var intrinsics, out var distortion, out float alpha);
@@ -350,14 +271,25 @@ namespace MixedSpace.XR
                 frame.Width, frame.Height, intrinsics, distortion, alpha);
             token.ThrowIfCancellationRequested();
             if (image == null) throw new InvalidOperationException("Fisheye processor returned no image.");
-            long captureTimestampNs = ToNanoseconds(frame.DeviceTime);
+            long captureTimestampNs;
+            if (UseHostMonotonicTimestamps)
+            {
+                captureTimestampNs = HostTicksToNanoseconds(frame.ReceivedAt);
+            }
+            else
+            {
+                lock (m_Gate)
+                    if (!m_ImageClock.TryToNanoseconds(frame.DeviceTime, out captureTimestampNs))
+                        throw new InvalidOperationException("Image timestamp cannot be converted using the verified clock unit.");
+                EnsureTimestampClocksHealthy();
+            }
             TraceTimestamp("image", frame.DeviceTime, captureTimestampNs, frame.ReceivedAt, m_CaptureTimestampProbe, true);
             var profile = new MixedSpaceCaptureProfile(image.Width, image.Height, 1,
                 MixedSpacePixelFormat.Luminance8, image.Intrinsics, pose.position, pose.rotation,
                 captureTimestampNs, Quaternion.Euler(m_ImageOrientationEuler),
                 nativeImageRotationAngle: NativeLocalizationImageRotationAngle);
             var capture = new MixedSpaceCameraCapture(profile, new MixedSpaceManagedPixelSource(image.Pixels));
-            m_ConsumedTimestamp = frame.DeviceTime;
+            m_ConsumedFrameReceivedAt = frame.ReceivedAt;
             if (m_WritePoseLogs) MixedSpaceCaptureJournal.Append(profile);
             return Task.FromResult<IMixedSpacePlatformFrame>(new MixedSpacePlatformFrame(
                 new MixedSpaceTrackingSnapshot(1), capture));
@@ -366,13 +298,21 @@ namespace MixedSpace.XR
         public MixedSpacePlatformPoseSample SamplePose()
         {
             if (!m_Ready || !IsDeviceTracking) return new MixedSpacePlatformPoseSample { IsTracking = false };
-            Pose pose = ReadCurrentPose(out long timestamp);
-            if (timestamp <= 0) return new MixedSpacePlatformPoseSample { IsTracking = false };
-            ValidatePose(pose);
-            long poseTimestampNs = ToNanoseconds(timestamp);
-            TraceTimestamp("GetCameraPhysicsPose", timestamp, poseTimestampNs, Stopwatch.GetTimestamp(), m_LiveTimestampProbe, false);
-            return new MixedSpacePlatformPoseSample { Position = pose.position, Rotation = pose.rotation,
-                TimestampNanoseconds = poseTimestampNs, IsTracking = true };
+            EnsureTimestampClocksHealthy();
+            bool valid = ObserveCurrentPose(out Pose pose, out long timestamp, out long poseTimestampNs, out long sampledAt);
+            EnsureTimestampClocksHealthy();
+            if (!valid) return new MixedSpacePlatformPoseSample { IsTracking = false };
+            TraceTimestamp("GetCameraPhysicsPose", timestamp, poseTimestampNs, sampledAt, m_LiveTimestampProbe, false);
+            return new MixedSpacePlatformPoseSample
+            {
+                Position = pose.position,
+                Rotation = pose.rotation,
+                TimestampNanoseconds = poseTimestampNs,
+                TimestampSource = UseHostMonotonicTimestamps
+                    ? MixedSpaceTrackingTimestampSource.HostMonotonic
+                    : MixedSpaceTrackingTimestampSource.Device,
+                IsTracking = true
+            };
         }
 
         public Task ShutdownAsync()
@@ -381,7 +321,14 @@ namespace MixedSpace.XR
             m_Starting = null; // 新启动不必等待已经失效的启动尝试。 / A new start need not join an invalidated startup attempt.
             m_ResumeRequested = false;
             m_Ready = false;
-            lock (m_Gate) { m_Accepting = false; m_Latest = null; }
+            lock (m_Gate)
+            {
+                m_Accepting = false;
+                m_Latest = null;
+                m_ImageClock.Reset();
+                m_PoseClock.Reset();
+            }
+            m_TimestampUnit = TimestampUnit.Unconfirmed;
             if (m_Opened) { m_Opened = false; CloseCamera(); }
             return Task.CompletedTask;
         }
@@ -390,53 +337,116 @@ namespace MixedSpace.XR
         {
             internal long LastRaw, LoggedRaw, LoggedNs, LoggedHost;
             internal int BackwardCount;
+            internal void Reset()
+            {
+                LastRaw = LoggedRaw = LoggedNs = LoggedHost = 0;
+                BackwardCount = 0;
+            }
         }
 
         private void TraceTimestamp(string source, long raw, long nanoseconds, long hostTicks, TimestampProbe probe, bool everySample)
         {
+            if (!m_WritePoseLogs && MixedSpaceLogger.Level > MixedSpaceLogger.LoggingLevel.Verbose) return;
             if (probe.LastRaw > 0 && raw < probe.LastRaw) ++probe.BackwardCount;
             probe.LastRaw = raw;
             double elapsed = probe.LoggedHost == 0 ? 0 :
                 (hostTicks - probe.LoggedHost) / (double)Stopwatch.Frequency;
             if (!everySample && probe.LoggedHost != 0 && elapsed < 1.0) return;
             string text = string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "[TIME-CHECK] source={0} configured_unit={1} raw={2} converted_ns={3} raw_delta={4} ns_delta={5} host_delta_seconds={6:F6} raw_units_per_second={7:F3} backwards_since_last_log={8}",
+                "[TIME-CHECK] source={0} configured_unit={1} raw={2} converted_ns={3} raw_delta={4} ns_delta={5} host_delta_seconds={6:F6} raw_units_per_second={7:F3} backwards_since_last_log={8} timestamp_source={9}",
                 source, m_TimestampUnit, raw, nanoseconds,
                 probe.LoggedHost == 0 ? 0 : raw - probe.LoggedRaw,
                 probe.LoggedHost == 0 ? 0 : nanoseconds - probe.LoggedNs,
-                elapsed, elapsed > 0 ? (raw - probe.LoggedRaw) / elapsed : 0, probe.BackwardCount);
+                elapsed, elapsed > 0 ? (raw - probe.LoggedRaw) / elapsed : 0, probe.BackwardCount,
+                UseHostMonotonicTimestamps ? "HostMonotonic" : "Device");
             probe.LoggedRaw = raw;
             probe.LoggedNs = nanoseconds;
             probe.LoggedHost = hostTicks;
             probe.BackwardCount = 0;
             try
             {
-                MixedSpacePoseFusionLogFile.Initialize();
-                MixedSpacePoseFusionLogFile.Append(2, text);
+                if (m_WritePoseLogs)
+                {
+                    MixedSpacePoseFusionLogFile.Initialize();
+                    MixedSpacePoseFusionLogFile.Append(2, text);
+                }
                 MixedSpaceLogger.Log(text, MixedSpaceLogger.LoggingLevel.Verbose, "TimestampCheck");
             }
             catch { } // Diagnostic failures must not interrupt localization.
         }
 
-        private long ToNanoseconds(long timestamp)
+        private bool ObserveCurrentPose(out Pose pose, out long raw, out long nanoseconds, out long sampledAt)
         {
-            switch (m_TimestampUnit)
+            pose = ReadCurrentPose(out raw);
+            sampledAt = Stopwatch.GetTimestamp();
+            nanoseconds = 0;
+            if (!UseHostMonotonicTimestamps && raw <= 0) return false;
+            ValidatePose(pose);
+
+            if (UseHostMonotonicTimestamps)
             {
-                case TimestampUnit.Nanoseconds: return timestamp;
-                case TimestampUnit.Microseconds: return Scale(timestamp, 1000L);
-                case TimestampUnit.Milliseconds: return Scale(timestamp, 1000000L);
-                default: throw new InvalidOperationException("Device clock unit is unconfirmed.");
+                nanoseconds = HostTicksToNanoseconds(sampledAt);
+                return true;
             }
+
+            lock (m_Gate)
+                return m_PoseClock.TryObserveCurrentTimestamp(raw, sampledAt, out nanoseconds);
         }
 
-        private long Scale(long timestamp, long factor)
+        private bool TryConfirmTimestampUnit()
         {
-            if (timestamp > long.MaxValue / factor || timestamp < long.MinValue / factor)
-                throw new InvalidOperationException(
-                    $"Device timestamp {timestamp} does not fit the configured clock unit " +
-                    $"'{m_TimestampUnit}'. Check MixedSpaceRokidProfile.TimestampUnit.");
-            return timestamp * factor;
+            long scale;
+            double imageRate, poseRate;
+            lock (m_Gate)
+            {
+                if (m_Latest == null || !m_ImageClock.Ready || !m_PoseClock.Ready) return false;
+                scale = m_ImageClock.NanosecondsPerUnit;
+                if (scale != m_PoseClock.NanosecondsPerUnit)
+                    throw new InvalidOperationException("Image and pose clocks use different units; the adapter must align its history-pose query before fusion.");
+                imageRate = m_ImageClock.RawUnitsPerSecond;
+                poseRate = m_PoseClock.RawUnitsPerSecond;
+            }
+            m_TimestampUnit = scale == 1 ? TimestampUnit.Nanoseconds :
+                scale == 1000 ? TimestampUnit.Microseconds : TimestampUnit.Milliseconds;
+            string diagnostic = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "[TIME-UNIT] expected={0} detected={1} scale_to_ns={2} action={3} image_raw_units_per_second={4:F3} pose_raw_units_per_second={5:F3}",
+                m_ExpectedTimestampUnit, m_TimestampUnit, scale, scale == 1 ? "passthrough" : "convert",
+                imageRate, poseRate);
+            try
+            {
+                if (m_WritePoseLogs)
+                {
+                    MixedSpacePoseFusionLogFile.Initialize();
+                    MixedSpacePoseFusionLogFile.Append(2, diagnostic);
+                }
+                if (scale != 1 || (m_ExpectedTimestampUnit != TimestampUnit.Auto && m_ExpectedTimestampUnit != m_TimestampUnit))
+                    MixedSpaceLogger.LogWarning(diagnostic);
+                else
+                    MixedSpaceLogger.Log(diagnostic, MixedSpaceLogger.LoggingLevel.Verbose);
+            }
+            catch { } // Diagnostic I/O must not reject a verified clock.
+            return true;
         }
+
+        private void EnsureTimestampClocksHealthy()
+        {
+            if (UseHostMonotonicTimestamps) return;
+
+            string failure;
+            lock (m_Gate)
+                failure = m_ImageClock.FailureReason == null ?
+                    (m_PoseClock.FailureReason == null ? null : "pose: " + m_PoseClock.FailureReason) :
+                    "image: " + m_ImageClock.FailureReason;
+            if (failure != null)
+            {
+                _ = ShutdownAsync();
+                throw new InvalidOperationException(
+                    "[TIME-UNIT] " + failure + " No further timestamps will be submitted to fusion.");
+            }
+        }
+        protected static long HostTicksToNanoseconds(long ticks) =>
+            (long)(ticks * (1_000_000_000.0 / Stopwatch.Frequency));
+
         private static double ElapsedMilliseconds(long start) =>
             (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
 

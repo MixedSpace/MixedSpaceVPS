@@ -3,7 +3,8 @@
     "rootNamespace": "",
     "references": [
         "Unity.XR.CoreUtils",
-        "Unity.TextMeshPro"
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

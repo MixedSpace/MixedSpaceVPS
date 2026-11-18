@@ -14,8 +14,7 @@ namespace MixedSpace
         private readonly Func<IMixedSpaceMapRepository> m_Maps;
         private readonly Func<IMixedSpacePlatformInfo> m_PlatformInfo;
         private readonly Func<bool> m_IsReady;
-        private readonly Func<bool> m_HasValidated;
-        private readonly Func<int> m_LicenseLevel;
+        private readonly Func<bool?> m_TokenValidationResult;
         private readonly Func<bool> m_HasSession;
         private readonly Func<bool> m_HasPlatform;
         private readonly Func<bool> m_HasLocalization;
@@ -27,8 +26,7 @@ namespace MixedSpace
             Func<IMixedSpaceMapRepository> maps,
             Func<IMixedSpacePlatformInfo> platformInfo,
             Func<bool> isReady,
-            Func<bool> hasValidated,
-            Func<int> licenseLevel,
+            Func<bool?> tokenValidationResult,
             Func<bool> hasSession,
             Func<bool> hasPlatform,
             Func<bool> hasLocalization,
@@ -38,8 +36,7 @@ namespace MixedSpace
             m_Maps = maps ?? throw new ArgumentNullException(nameof(maps));
             m_PlatformInfo = platformInfo ?? throw new ArgumentNullException(nameof(platformInfo));
             m_IsReady = isReady ?? throw new ArgumentNullException(nameof(isReady));
-            m_HasValidated = hasValidated ?? throw new ArgumentNullException(nameof(hasValidated));
-            m_LicenseLevel = licenseLevel ?? throw new ArgumentNullException(nameof(licenseLevel));
+            m_TokenValidationResult = tokenValidationResult ?? throw new ArgumentNullException(nameof(tokenValidationResult));
             m_HasSession = hasSession ?? throw new ArgumentNullException(nameof(hasSession));
             m_HasPlatform = hasPlatform ?? throw new ArgumentNullException(nameof(hasPlatform));
             m_HasLocalization = hasLocalization ?? throw new ArgumentNullException(nameof(hasLocalization));
@@ -90,8 +87,7 @@ namespace MixedSpace
                 platformKind,
                 platformName,
                 m_IsReady(),
-                m_HasValidated(),
-                m_LicenseLevel(),
+                m_TokenValidationResult(),
                 mapCount,
                 m_HasSession(),
                 m_HasPlatform(),

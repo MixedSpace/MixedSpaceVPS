@@ -102,6 +102,8 @@ namespace MixedSpace
                 if (cancellationToken.IsCancellationRequested || platformResult == null)
                     return;
 
+                if (m_WritePoseLogs) MixedSpaceLocalizationJournal.AppendCaptureTrackingStatus(platformResult);
+
                 if (platformResult.HasCapture)
                 {
                     if (m_WritePoseLogs) MixedSpaceCaptureImageJournal.Append(platformResult.Capture);

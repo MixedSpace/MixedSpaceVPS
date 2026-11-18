@@ -79,7 +79,6 @@ namespace MixedSpace.Editor
             m_Issues = 0;
             using (new EditorGUI.DisabledScope(busy))
             {
-                if (GUILayout.Button("Fix All · 一键修复项目配置", GUILayout.Height(30))) Run(FixAll);
                 m_Scroll = EditorGUILayout.BeginScrollView(m_Scroll);
                 if (m_Platform == Platform.XRany && !MixedSpaceSampleSetup.Installed("com.gzshixiang.gxrsdk"))
                     Issue("缺少 GxrSdk", "选择厂商 SDK 的 package.json。", InstallGxr, "选择并安装");
@@ -106,16 +105,20 @@ namespace MixedSpace.Editor
                             if (!EditorUserBuildSettings.SwitchActiveBuildTargetAsync(BuildTargetGroup.Android, BuildTarget.Android))
                                 throw new InvalidOperationException("Android 切换失败，请检查 Android Build Support。");
                         }, severity: MessageType.Warning);
+                    if ((m_Platform == Platform.Mobile || m_Platform == Platform.Huawei) && (int)PlayerSettings.Android.minSdkVersion < 26)
+                        Issue("最低 Android API 低于 26", "定位插件 nativebindings 要求 Android 8.0（API 26）或更高，请设置 Minimum API Level。", FixAndroidMinimum);
                     if (PlayerSettings.GetScriptingBackend(BuildTargetGroup.Android) != ScriptingImplementation.IL2CPP)
                         Issue("Android 未使用 IL2CPP", "使用 IL2CPP 构建。", () => PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP));
                     if (PlayerSettings.Android.targetArchitectures != AndroidArchitecture.ARM64)
                         Issue("Android 架构不是仅 ARM64", "当前定位原生插件面向 ARM64。", () => PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64);
                     if (!MixedSpacePicoSetupWindow.HasCameraDeclaration()) Issue("缺少 CAMERA 权限声明", "补权限声明，已有清单修改前备份。", MixedSpacePicoSetupWindow.RepairCameraPermission);
-                    if (m_Platform == Platform.Huawei && !MixedSpaceSampleSetup.GlesReady) Issue("图形 API 未使用 OpenGLES3", "使用 Huawei 示例对应的图形 API。", FixAll);
+                    if ((m_Platform == Platform.Huawei || m_Platform == Platform.Mobile) && !MixedSpaceSampleSetup.GlesReady)
+                        Issue("图形 API 未使用 OpenGLES3", m_Platform == Platform.Mobile ? "ARCore 不支持 Vulkan，请关闭 Auto Graphics API 并仅使用 OpenGLES3。" : "使用 Huawei 示例对应的图形 API。", FixAll);
                     if (m_Platform == Platform.Mobile && !MixedSpaceSampleSetup.LoaderReady(BuildTargetGroup.Android, ArCore))
                         Issue("ARCore Loader 未就绪", "配置 Loader 并启用启动初始化。", () => MixedSpaceSampleSetup.FixLoader(BuildTargetGroup.Android, ArCore));
                 }
-                if (m_Issues == 0) EditorGUILayout.HelpBox("当前环境配置已完成。", MessageType.Info);
+                if (MixedSpaceSampleSetup.FixAllButton(m_Issues)) Run(FixAll);
+                if (m_Issues == 0) EditorGUILayout.HelpBox(MixedSpaceSampleSetup.ReadyMessage, MessageType.Info);
                 EditorGUILayout.EndScrollView();
             }
             if (busy) EditorGUILayout.LabelField("正在安装、编译或导入，请稍候…");
@@ -132,6 +135,11 @@ namespace MixedSpace.Editor
             version.CompareTo(new Version(13, 0)) >= 0;
         private static void SetIosDescription() => PlayerSettings.iOS.cameraUsageDescription = "使用相机图像进行空间定位。";
         private static void SetIosLocationDescription() => PlayerSettings.iOS.locationUsageDescription = "使用您的位置辅助空间定位，匹配所在区域的地图。";
+        private static void FixAndroidMinimum()
+        {
+            if ((int)PlayerSettings.Android.minSdkVersion < 26)
+                PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
+        }
         private void FixAll()
         {
             if (m_Platform == Platform.Mobile && m_Ios)
@@ -144,8 +152,12 @@ namespace MixedSpace.Editor
                 if (EditorUserBuildSettings.activeBuildTarget != BuildTarget.iOS && !EditorUserBuildSettings.SwitchActiveBuildTargetAsync(BuildTargetGroup.iOS, BuildTarget.iOS))
                     throw new InvalidOperationException("iOS 构建目标切换失败。");
             }
-            else MixedSpaceSampleSetup.FixAndroid(m_Platform == Platform.Huawei,
-                m_Platform == Platform.Mobile && MixedSpaceSampleSetup.FindType(ArCore) != null ? ArCore : null);
+            else
+            {
+                if (m_Platform == Platform.Mobile || m_Platform == Platform.Huawei) FixAndroidMinimum();
+                MixedSpaceSampleSetup.FixAndroid(m_Platform == Platform.Huawei || m_Platform == Platform.Mobile,
+                    m_Platform == Platform.Mobile && MixedSpaceSampleSetup.FindType(ArCore) != null ? ArCore : null);
+            }
         }
         [Serializable] private sealed class PackageIdentity { public string name; }
         private static void InstallGxr()

@@ -63,10 +63,9 @@ namespace MixedSpace.XR
         {
             if (plan == null) throw new ArgumentNullException(nameof(plan));
             bool active = await m_Cloud.ApplyAsync(plan);
-            // 云求解参数不是本地参数；保留 RunPlan.OnDevice，仅同步地图增删。
-            // Cloud solver parameters are not local solver parameters. Preserve RunPlan.OnDevice settings; only mirror map
-            // additions/removals.
-            await m_Offline.ApplyAsync(new MixedSpaceProviderPlan(plan.Additions, plan.Removals));
+            // Keep map changes and runtime solver updates aligned with Cloud. The device provider
+            // consumes the solver, minimum neighbor count and radius; cloud-only fields are ignored.
+            await m_Offline.ApplyAsync(plan);
             m_ReportedMissingMaps = false;
             m_ConsecutiveCloudMisses = 0;
             return active;

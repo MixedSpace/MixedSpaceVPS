@@ -137,10 +137,6 @@ namespace MixedSpace
     /// </summary>
     public interface IMixedSpaceCloudWorkspace
     {
-        Task<int> GetLicenseLevelAsync(
-            IProgress<float> progress = null,
-            CancellationToken cancellationToken = default);
-
         Task<IReadOnlyList<MixedSpaceCloudMapSummary>> FindLoadableMapsAsync(
             MixedSpaceCloudMapSearch search = null,
             IProgress<float> progress = null,

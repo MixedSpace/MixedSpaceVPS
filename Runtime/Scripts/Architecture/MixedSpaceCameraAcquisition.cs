@@ -60,6 +60,16 @@ namespace MixedSpace.XR
 
         public MixedSpaceCameraCapture Acquire(MixedSpacePixelFormat format, CancellationToken token)
         {
+            return Acquire(format, token, null);
+        }
+
+        /// <summary>
+        /// 采集图像并附带可选的原生定位方向；显示旋转和跟踪位姿独立保留。
+        /// Captures with an optional native image direction while preserving display rotation and tracking pose.
+        /// </summary>
+        public MixedSpaceCameraCapture Acquire(MixedSpacePixelFormat format, CancellationToken token,
+            int? nativeImageRotationAngle)
+        {
             token.ThrowIfCancellationRequested();
             if (format != MixedSpacePixelFormat.Luminance8 && format != MixedSpacePixelFormat.Rgb24)
                 throw new ArgumentOutOfRangeException(nameof(format));
@@ -75,7 +85,8 @@ namespace MixedSpace.XR
                     MixedSpacePlatformPoseSample pose = m_Pose.SamplePose();
                     var profile = new MixedSpaceCaptureProfile(image.Width, image.Height,
                         format == MixedSpacePixelFormat.Luminance8 ? 1 : 3, format, image.Intrinsics,
-                        pose.Position, pose.Rotation, pose.TimestampNanoseconds, m_DisplayRotation());
+                        pose.Position, pose.Rotation, pose.TimestampNanoseconds, m_DisplayRotation(),
+                        nativeImageRotationAngle: nativeImageRotationAngle);
                     pixels = image.OpenPixels(format);
                     capture = new MixedSpaceCameraCapture(profile, pixels);
                     pixels = null; // 采集对象成为像素的唯一所有者。 / Capture becomes the sole pixel owner.

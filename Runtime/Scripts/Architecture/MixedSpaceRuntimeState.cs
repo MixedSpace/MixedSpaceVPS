@@ -53,8 +53,8 @@ namespace MixedSpace
         public MixedSpacePlatformKind Platform { get; }
         public string PlatformRuntimeName { get; }
         public bool IsReady { get; }
-        public bool HasValidated { get; }
-        public int LicenseLevel { get; }
+        public bool HasValidated => TokenValidationResult.HasValue;
+        public bool? TokenValidationResult { get; }
         public int RegisteredMapCount { get; }
         public bool HasSpatialSession { get; }
         public bool HasPlatform { get; }
@@ -71,8 +71,7 @@ namespace MixedSpace
             MixedSpacePlatformKind platform,
             string platformRuntimeName,
             bool isReady,
-            bool hasValidated,
-            int licenseLevel,
+            bool? tokenValidationResult,
             int registeredMapCount,
             bool hasSpatialSession,
             bool hasPlatform,
@@ -85,8 +84,7 @@ namespace MixedSpace
             Platform = platform;
             PlatformRuntimeName = platformRuntimeName ?? string.Empty;
             IsReady = isReady;
-            HasValidated = hasValidated;
-            LicenseLevel = licenseLevel;
+            TokenValidationResult = tokenValidationResult;
             RegisteredMapCount = Math.Max(0, registeredMapCount);
             HasSpatialSession = hasSpatialSession;
             HasPlatform = hasPlatform;

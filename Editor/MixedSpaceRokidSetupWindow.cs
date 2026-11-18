@@ -13,7 +13,7 @@ namespace MixedSpace.Editor
     /// Dependency installation and Android setup for the optional Rokid sample, without vendor
     /// assembly references.
     /// </summary>
-    public sealed class MixedSpaceRokidSetupWindow : EditorWindow
+    public sealed class MixedSpaceRokidSetupWindow : EditorWindow, IHasCustomMenu
     {
         private const string RegistryUrl = "https://npm.rokid.com";
         private static AddAndRemoveRequest s_Install;
@@ -73,23 +73,6 @@ namespace MixedSpace.Editor
                 EditorApplication.isUpdating || EditorApplication.isPlaying;
             using (new EditorGUI.DisabledScope(busy))
             {
-                if (GUILayout.Button("Fix All · 配置环境和依赖", GUILayout.Height(30)))
-                {
-                    try
-                    {
-                        m_Status = null; m_HasError = false;
-                        ConfigureRegistry();
-                        MixedSpaceSampleSetup.FixAndroid(true);
-                        var current = UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages();
-                        var missing = Packages.Where(spec => {
-                            var parts = spec.Split('@');
-                            return !current.Any(p => p.name == parts[0] && p.version == parts[1]);
-                        }).ToArray();
-                        if (missing.Length > 0) s_Install = Client.AddAndRemove(missing);
-                        else Client.Resolve();
-                    }
-                    catch (Exception e) { m_Status = e.Message; m_HasError = true; }
-                }
                 try
                 {
                     var manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText("Packages/manifest.json"));
@@ -151,19 +134,38 @@ namespace MixedSpace.Editor
                         PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3 });
                     });
                 }
+                if (MixedSpaceSampleSetup.FixAllButton(issues))
+                {
+                    try
+                    {
+                        m_Status = null; m_HasError = false;
+                        ConfigureRegistry();
+                        MixedSpaceSampleSetup.FixAndroid(true);
+                        var current = UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages();
+                        var missing = Packages.Where(spec => {
+                            var parts = spec.Split('@');
+                            return !current.Any(p => p.name == parts[0] && p.version == parts[1]);
+                        }).ToArray();
+                        if (missing.Length > 0) s_Install = Client.AddAndRemove(missing);
+                        else Client.Resolve();
+                    }
+                    catch (Exception e) { m_Status = e.Message; m_HasError = true; }
+                }
             }
             if (busy) EditorGUILayout.HelpBox("正在安装、编译或导入资源，请稍候。完成后自动重新检测。", MessageType.Info);
-            else if (issues == 0) EditorGUILayout.HelpBox("当前自动检测项均已通过。", MessageType.Info);
+            else if (issues == 0) EditorGUILayout.HelpBox(MixedSpaceSampleSetup.ReadyMessage, MessageType.Info);
             if (m_HasError && !string.IsNullOrEmpty(m_Status))
             {
                 EditorGUILayout.HelpBox(m_Status, MessageType.Error);
                 if (GUILayout.Button("关闭错误提示")) { m_Status = null; m_HasError = false; }
             }
             EditorGUILayout.EndScrollView();
-            // 未实现自动检测的设备项不冒充“未配置”，保留独立检查入口。
-            // Keep manual checks separate for device settings without automatic detection; do not label them unconfigured.
-            if (GUILayout.Button("打开 XR 设置（手动检查 Loader / Rokid Features）"))
-                SettingsService.OpenProjectSettings("Project/XR Plug-in Management");
+        }
+
+        public void AddItemsToMenu(GenericMenu menu)
+        {
+            menu.AddItem(new GUIContent("打开 XR 设置（手动检查 Loader / Rokid Features）"), false,
+                () => SettingsService.OpenProjectSettings("Project/XR Plug-in Management"));
         }
 
         private void Issue(string title, string detail, string button, Action fix, MessageType severity = MessageType.Error)

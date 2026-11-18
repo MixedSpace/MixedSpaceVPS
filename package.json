@@ -18,6 +18,7 @@
     "com.unity.xr.openxr": "1.8.2",
     "com.unity.textmeshpro": "3.0.6",
     "com.unity.modules.ui": "1.0.0",
+    "com.unity.ugui": "1.0.0",
     "com.unity.2d.sprite": "1.0.0",
     "com.unity.render-pipelines.universal": "14.0.9",
     "com.unity.ai.navigation": "1.1.5"
@@ -30,9 +31,54 @@
   },
   "samples": [
     {
+      "displayName": "XREALAdapter",
+      "description": "XREAL Aura Android XR Camera 0 与 OpenXR 位姿适配器，包含连续定位示例。使用前需配置标定、相机外参及近似采帧时序；不包含录制与诊断试验工具。",
+      "path": "XREALAdapter~"
+    },
+    {
+      "displayName": "MobileAdapter",
+      "description": "移动端接入示例，用于参考 MixedSpace SDK 的场景配置和平台适配方式。",
+      "path": "MobileAdapter~"
+    },
+    {
+      "displayName": "Pico4UAdapter",
+      "description": "PICO 4 Ultra 相机适配器与示例场景，通过 PXR_CameraImage 获取图像并接入跟踪位姿。导入前需安装提供对应相机 API 的 PICO Unity SDK。",
+      "path": "Pico4UAdapter~"
+    },
+    {
+      "displayName": "Pico4UEAdapter",
+      "description": "PICO 4 Ultra Enterprise 企业相机适配器与示例场景，接入相机图像和跟踪位姿。导入前需安装兼容企业相机 API 的 PICO Unity Integration SDK。",
+      "path": "Pico4UEAdapter~"
+    },
+    {
+      "displayName": "Pico4EAdapter",
+      "description": "PICO 4 Enterprise VST 相机适配器与示例场景。导入前需安装对应的 PICO 厂商 SDK。",
+      "path": "Pico4EAdapter~"
+    },
+    {
+      "displayName": "HuaweiAdapter",
+      "description": "Android 平台 Huawei AR Engine 相机适配器与示例，包含配套的厂商 Unity SDK 文件。",
+      "path": "HuaweiAdapter~"
+    },
+    {
+      "displayName": "XRanyAdapter",
+      "description": "XRany GxrSdk 左侧鱼眼相机适配器与示例场景。导入前需安装 GxrSdk。",
+      "path": "XRanyAdapter~"
+    },
+    {
       "displayName": "RokidAdapter",
       "description": "Rokid 设备平台适配器与示例，用于将相机图像和跟踪位姿接入 MixedSpace SDK。",
       "path": "RokidAdapter~"
+    },
+    {
+      "displayName": "XVXRAdapter",
+      "description": "XVXR 设备平台适配器与示例，用于将相机图像和跟踪位姿接入 MixedSpace SDK。",
+      "path": "XVXRAdapter~"
+    },
+    {
+      "displayName": "QuestAdapter",
+      "description": "Quest 3 / Quest 3S 相机与 VPS 定位示例。通过 Quest 设置与依赖检查的 Fix 或 Fix All 安装缺少的 Meta 和 Unity 依赖，并配置 TMP 与 Android。",
+      "path": "QuestAdapter~"
     }
   ]
 }

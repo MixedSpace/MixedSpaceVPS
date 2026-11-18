@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Xml;
@@ -68,16 +68,6 @@ namespace MixedSpace.Editor
             int issues = 0;
             using (new EditorGUI.DisabledScope(s_Install != null || EditorApplication.isCompiling || EditorApplication.isUpdating || EditorApplication.isPlaying))
             {
-                if (GUILayout.Button("Fix All · 一键修复项目配置", GUILayout.Height(30)))
-                {
-                    try
-                    {
-                        m_Error = null;
-                        const string loader = "Unity.XR.PXR.PXR_Loader";
-                        MixedSpaceSampleSetup.FixAndroid(false, MixedSpaceSampleSetup.FindType(loader) != null ? loader : null);
-                    }
-                    catch (Exception e) { m_Error = e.Message; }
-                }
                 var pico = UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages()
                     .FirstOrDefault(p => p.name == "com.unity.xr.picoxr");
                 if (pico == null)
@@ -125,8 +115,18 @@ namespace MixedSpace.Editor
                     issues++;
                     Issue("XR 未设置启动时初始化", "PICO 相机位姿需要运行中的 XR 跟踪。", "修复", () => { settings.InitManagerOnStart = true; EditorUtility.SetDirty(settings); AssetDatabase.SaveAssets(); });
                 }
+                if (MixedSpaceSampleSetup.FixAllButton(issues))
+                {
+                    try
+                    {
+                        m_Error = null;
+                        const string loader = "Unity.XR.PXR.PXR_Loader";
+                        MixedSpaceSampleSetup.FixAndroid(false, MixedSpaceSampleSetup.FindType(loader) != null ? loader : null);
+                    }
+                    catch (Exception e) { m_Error = e.Message; }
+                }
             }
-            if (issues == 0) EditorGUILayout.HelpBox("已检查的项目配置全部通过。请在设备首次运行时允许相机访问。", MessageType.Info);
+            if (issues == 0) EditorGUILayout.HelpBox(MixedSpaceSampleSetup.ReadyMessage, MessageType.Info);
             if (s_Install != null) EditorGUILayout.HelpBox("正在安装 PICO SDK…", MessageType.Info);
             if (!string.IsNullOrEmpty(m_Error))
             {

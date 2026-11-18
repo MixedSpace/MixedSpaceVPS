@@ -2,8 +2,7 @@
 Native binding for the xrloc payload (xrloc.dll on desktop, libxrloc.so on
 Android, libxrloc.a linked into the executable on iOS — hence __Internal there).
 The payload exports the same Cdecl symbols on all three platforms; the
-MixedSpaceXrLocServer enum stays top level because scene serialization
-(MixedSpaceSDK.Inspector) references it on every platform.
+MixedSpaceXrLocServer identifies the production authentication profile.
 All XrLoc* DllImport declarations live here — keep this the single binding
 surface for the xrloc library; business logic should not P/Invoke it directly.
 Signatures mirror xrloc_c.h byte for byte. Two traps are worth keeping in mind
@@ -19,13 +18,12 @@ using System.Runtime.InteropServices;
 namespace MixedSpace
 {
     /// <summary>
-    /// SDK Inspector 中显示的原生 Server 环境选择。
-    /// Native "Server" profile selector shown on the MixedSpaceSDK Inspector.
+    /// SDK 使用的原生正式服务器环境。
+    /// Production server profile used by the SDK.
     /// </summary>
     public enum MixedSpaceXrLocServer
     {
-        Production = 0,
-        Test = 1
+        Production = 0
     }
 }
 
@@ -92,13 +90,9 @@ namespace MixedSpace
     }
 
     /// <summary>
-    /// 32 字节原始图像描述符，stride=0 表示紧密行排列。solver_type 非 1 时读取 rotationAngle，不因先验指针非空而改变来源；solver 0 加角度 0
-    /// 会固定图像方向，即便先验准确也一样。
-    /// Raw image descriptor (32 bytes). stride 0 means rows are contiguous;
-    /// rotationAngle is read whenever solver_type is not 1. The payload gates the
-    /// angle source on solver_type alone and never looks at the prior pointer, so a
-    /// caller that passes solver 0 with rotationAngle 0 pins the frame to an
-    /// arbitrary quarter turn regardless of how good the prior is.
+    /// 32 字节原始图像描述符，stride=0 表示紧密行排列。rotationAngle 提供顺时针方向。
+    /// Raw image descriptor (32 bytes). A zero stride means contiguous rows.
+    /// rotationAngle supplies the clockwise image rotation.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct MixedSpaceXrLocImage
@@ -135,6 +129,20 @@ namespace MixedSpace
         public int confidence;
         public byte success;
         public int mapId;
+    }
+
+    /// <summary>
+    /// XRLoc 2.3.0 的位置先验。原生结构中的 int32 后有 4 字节填充，随后是三个 double。
+    /// XRLoc 2.3.0 position prior. Native alignment places three doubles after
+    /// the map ID and its four bytes of padding.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MixedSpaceXrLocPosePrior
+    {
+        public int mapId;
+        public double x;
+        public double y;
+        public double z;
     }
 
     /// <summary>
@@ -185,14 +193,12 @@ namespace MixedSpace
         private static extern int VerifyKeyRaw([MarshalAs(UnmanagedType.LPStr)] string localKey);
 
         /// <summary>
-        /// 验证令牌前选择原生服务器环境。成功返回 0；-1 表示参数名或值不接受，仅允许 0、1。
-        /// Selects the native server profile before token verification.
-        /// Returns 0 (MixedSpaceXrLocStatus.Ok) on success; -1 means the key spelling
-        /// or the value fell outside the accepted set (only 0 and 1 are valid).
+        /// 验证令牌前选择原生正式服务器环境，成功返回 0。
+        /// Selects the production native server before token verification. Returns 0 on success.
         /// </summary>
-        internal static int SetServer(int serverId)
+        internal static int SetServer()
         {
-            return SetIntegerRaw("Server", serverId);
+            return SetIntegerRaw("Server", (int)MixedSpaceXrLocServer.Production);
         }
 
         /// <summary>
@@ -238,10 +244,8 @@ namespace MixedSpace
         #region Diagnostics
 
         /// <summary>
-        /// 安装进程级日志输出，签名为 void (*)(const char*)，与 PosePlugin 相同，可共享托管桥接委托。
-        /// Installs the process-wide log sink. The callback signature is
-        /// void (*)(const char*), identical to the PosePlugin sink, so the same
-        /// managed thunk can serve both libraries.
+        /// 安装进程级日志输出，签名为 void (*)(const char*)。
+        /// Installs the process-wide log sink with callback signature void (*)(const char*).
         /// </summary>
         [DllImport(Library, EntryPoint = "XrLocRegisterLogCallback", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void RegisterLogCallback(IntPtr callback);
@@ -280,11 +284,9 @@ namespace MixedSpace
         #region Localization
 
         /// <summary>
-        /// 搜索显式传入的已加载地图 ID，没有搜索全部驻留地图的哨兵。方向参数必须与 solverType 配套：solver 1 使用 rotationPriorXyzw，其他方向探测使用
-        /// image.rotationAngle。不能仅凭先验非空就假定覆盖图像角度，具体组合由 MixedSpaceXrLocCore 选择。
-        /// Searches the explicitly loaded map IDs; there is no all-resident-maps sentinel. Orientation
-        /// must match solverType: solver 1 uses rotationPriorXyzw, while other probes use image.rotationAngle. A non-null
-        /// prior alone does not override the angle; MixedSpaceXrLocCore selects the combination.
+        /// 搜索显式传入的已加载地图 ID，可传入采集旋转四元数帮助确定图像方向。
+        /// Searches the supplied map IDs. The optional capture rotation quaternion
+        /// guides image orientation.
         /// </summary>
         [DllImport(Library, EntryPoint = "XrLocLocalize", CallingConvention = CallingConvention.Cdecl)]
         internal static extern int Localize(
@@ -294,6 +296,17 @@ namespace MixedSpace
             ref MixedSpaceXrLocCamera camera,
             int solverType,
             float[] rotationPriorXyzw,
+            out MixedSpaceXrLocPose pose);
+
+        [DllImport(Library, EntryPoint = "XrLocLocalizeWithPrior", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int LocalizeWithPrior(
+            int[] mapIds,
+            int numMaps,
+            ref MixedSpaceXrLocImage image,
+            ref MixedSpaceXrLocCamera camera,
+            int solverType,
+            float[] rotationPriorXyzw,
+            ref MixedSpaceXrLocPosePrior positionPrior,
             out MixedSpaceXrLocPose pose);
 
         #endregion Localization

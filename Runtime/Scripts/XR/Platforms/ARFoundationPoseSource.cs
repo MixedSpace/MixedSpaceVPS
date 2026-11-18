@@ -48,6 +48,7 @@ namespace MixedSpace.XR
             Position = m_Camera != null ? m_Camera.position : Vector3.zero,
             Rotation = m_Camera != null ? m_Camera.rotation : Quaternion.identity,
             TimestampNanoseconds = (long)(Stopwatch.GetTimestamp() * (1000000000.0 / Stopwatch.Frequency)),
+            TimestampSource = MixedSpaceTrackingTimestampSource.HostMonotonic,
             IsTracking = IsTracking
         };
     }

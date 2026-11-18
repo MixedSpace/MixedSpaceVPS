@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using MixedSpace.ServiceContracts;
 using MixedSpace.REST;
@@ -40,12 +41,33 @@ namespace MixedSpace.EditorTools
             Open(Selection.activeGameObject?.GetComponent<MixedSpaceMapBinding>());
         }
 
+        private const string CreateMapBindMenu = "MixedSpaceSDK/Maps/CreateMapBind";
+
+        [MenuItem(CreateMapBindMenu)]
+        private static void CreateMapBind()
+        {
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            MixedSpaceWorldRoot world = scene.GetRootGameObjects()
+                .Select(root => root.GetComponentInChildren<MixedSpaceWorldRoot>(true))
+                .FirstOrDefault(candidate => candidate != null);
+
+            if (world == null)
+            {
+                EditorUtility.DisplayDialog("CreateMapBind",
+                    "No MixedSpace World Root was found in the active scene.", "OK");
+                return;
+            }
+
+            MixedSpaceMapBinding binding = CreateEmptyBinding(world, "Create MixedSpace map binding");
+            Selection.activeGameObject = binding.gameObject;
+        }
+
         public static void Open(MixedSpaceMapBinding binding)
         {
             var window = GetWindow<MixedSpaceMapWorkspaceWindow>();
             window.titleContent = new GUIContent("Map Workspace");
             window.minSize = new Vector2(430f, 540f);
-            if (binding != null)
+            if (binding != null && !window.m_IsBusy)
                 window.m_Target = binding;
             window.Show();
             window.Repaint();
@@ -53,11 +75,12 @@ namespace MixedSpace.EditorTools
 
         private void OnSelectionChange()
         {
-            MixedSpaceMapBinding selected = Selection.activeGameObject?.GetComponent<MixedSpaceMapBinding>();
-            if (selected == null)
+            if (m_IsBusy)
                 return;
 
-            m_Target = selected;
+            MixedSpaceMapBinding selected = Selection.activeGameObject?.GetComponent<MixedSpaceMapBinding>();
+            if (selected != null)
+                m_Target = selected;
             Repaint();
         }
 
@@ -150,6 +173,35 @@ namespace MixedSpace.EditorTools
                 if (GUILayout.Button("Bind Local Asset", GUILayout.Height(26f)))
                     BindLocalAsset();
             }
+
+            MixedSpaceWorldRoot world = m_Target != null
+                ? m_Target.GetComponentInParent<MixedSpaceWorldRoot>(true)
+                : null;
+            if (world == null)
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                MixedSpaceWorldRoot[] worlds = scene.GetRootGameObjects()
+                    .SelectMany(root => root.GetComponentsInChildren<MixedSpaceWorldRoot>(true))
+                    .Take(2)
+                    .ToArray();
+                if (worlds.Length == 1)
+                    world = worlds[0];
+            }
+
+            TextAsset[] selectedMaps = Selection.objects.OfType<TextAsset>()
+                .Where(asset => AssetDatabase.GetAssetPath(asset).EndsWith(".bytes", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            bool hasSceneWorld = world != null && world.gameObject.scene.IsValid() &&
+                world.gameObject.scene.isLoaded && !EditorUtility.IsPersistent(world);
+            EditorGUILayout.HelpBox(
+                "Select map .bytes assets in the Project panel. Batch binding uses the Target Binding world or the only World Root in the active scene.",
+                MessageType.None);
+            EditorGUILayout.LabelField("Batch Destination", hasSceneWorld ? world.name : "Set Target Binding or add a World Root");
+            using (new EditorGUI.DisabledScope(m_IsBusy || !hasSceneWorld || selectedMaps.Length == 0))
+            {
+                if (GUILayout.Button($"Bind Selected Local Maps ({selectedMaps.Length})", GUILayout.Height(26f)))
+                    BindSelectedLocalAssets(world, selectedMaps);
+            }
         }
 
         private void DrawCloudSection()
@@ -197,6 +249,7 @@ namespace MixedSpace.EditorTools
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
             using (new EditorGUI.DisabledScope(m_IsBusy || m_Target == null ||
                                                !m_Target.Definition.IsReady ||
+                                               MixedSpaceMapDefinition.IsRetiredKey(m_Target.Definition.Key) ||
                                                MixedSpaceMapWorkspaceService.HasGeneratedLocalMapKey(m_Target.Definition)))
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -211,26 +264,31 @@ namespace MixedSpace.EditorTools
 
         private void CreateBinding()
         {
-            Transform parent = Selection.activeTransform;
-            MixedSpaceWorldRoot world = parent?.GetComponentInParent<MixedSpaceWorldRoot>(true);
+            MixedSpaceWorldRoot world = Selection.activeGameObject?.GetComponentInParent<MixedSpaceWorldRoot>(true);
             if (world == null)
             {
                 var worldObject = new GameObject("MixedSpace World");
                 Undo.RegisterCreatedObjectUndo(worldObject, "Create MixedSpace world");
                 world = Undo.AddComponent<MixedSpaceWorldRoot>(worldObject);
-                parent = world.transform;
-            }
-            else
-            {
-                parent = world.transform;
             }
 
-            var bindingObject = new GameObject("Map Binding");
-            Undo.RegisterCreatedObjectUndo(bindingObject, "Create MixedSpace map binding");
-            bindingObject.transform.SetParent(parent, false);
-            m_Target = Undo.AddComponent<MixedSpaceMapBinding>(bindingObject);
-            Selection.activeGameObject = bindingObject;
+            m_Target = CreateEmptyBinding(world, "Create MixedSpace map binding");
+            Selection.activeGameObject = m_Target.gameObject;
             SetStatus("Created a new Map Binding.", MessageType.Info);
+        }
+
+        private static MixedSpaceMapBinding CreateEmptyBinding(MixedSpaceWorldRoot world, string undoName)
+        {
+            var bindingObject = new GameObject("Map Binding");
+            Undo.RegisterCreatedObjectUndo(bindingObject, undoName);
+            if (bindingObject.scene != world.gameObject.scene)
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(bindingObject, world.gameObject.scene);
+            Undo.SetTransformParent(bindingObject.transform, world.transform, undoName);
+            Undo.RecordObject(bindingObject.transform, undoName);
+            bindingObject.transform.localPosition = Vector3.zero;
+            bindingObject.transform.localRotation = Quaternion.identity;
+            bindingObject.transform.localScale = Vector3.one;
+            return Undo.AddComponent<MixedSpaceMapBinding>(bindingObject);
         }
 
         private void BindLocalAsset()
@@ -271,30 +329,90 @@ namespace MixedSpace.EditorTools
             }
 
             Undo.RecordObject(m_Target, "Bind local MixedSpace map");
+            Undo.RecordObject(m_Target.gameObject, "Bind local MixedSpace map");
+            ApplyLocalBinding(m_Target, m_LocalMapAsset, mapId, displayName, descriptor, hasMetadata);
+            RemoveStalePointCloudView();
+            SaveTarget();
+            SetStatus($"Bound local map '{displayName}' for on-device localization.", MessageType.Info);
+        }
+
+        private void BindSelectedLocalAssets(MixedSpaceWorldRoot world, TextAsset[] assets)
+        {
+            var mapIds = new HashSet<int>(world.gameObject.scene.GetRootGameObjects()
+                .SelectMany(root => root.GetComponentsInChildren<MixedSpaceMapBinding>(true))
+                .Select(binding => binding.Definition)
+                .Where(definition => definition.IsReady)
+                .Select(definition => definition.Key));
+            var maps = new List<(TextAsset Asset, int Id, string Name, MixedSpaceCloudMapDescriptor Descriptor, bool HasMetadata)>();
+
+            foreach (TextAsset asset in assets)
+            {
+                if (!MixedSpaceMapWorkspaceService.TryReadLocalMap(asset, out int mapId, out string displayName,
+                        out MixedSpaceCloudMapDescriptor descriptor, out bool hasMetadata, out string error))
+                {
+                    SetStatus($"{asset.name}: {error}", MessageType.Error);
+                    return;
+                }
+
+                if (!mapIds.Add(mapId))
+                {
+                    SetStatus($"{asset.name}: map key {mapId} is already bound in this scene or repeated in the selection.", MessageType.Error);
+                    return;
+                }
+
+                maps.Add((asset, mapId, displayName, descriptor, hasMetadata));
+            }
+
+            const string undoName = "Bind selected MixedSpace maps";
+            Undo.IncrementCurrentGroup();
+            int undoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName(undoName);
+
+            try
+            {
+                foreach (var map in maps)
+                {
+                    MixedSpaceMapBinding binding = CreateEmptyBinding(world, undoName);
+                    Undo.RecordObject(binding, undoName);
+                    ApplyLocalBinding(binding, map.Asset, map.Id, map.Name, map.Descriptor, map.HasMetadata);
+                }
+
+                Undo.CollapseUndoOperations(undoGroup);
+                UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(world.gameObject.scene);
+                SetStatus($"Bound {maps.Count} local maps under '{world.name}'.", MessageType.Info);
+            }
+            catch (Exception exception)
+            {
+                Undo.RevertAllDownToGroup(undoGroup);
+                SetStatus($"Batch binding failed: {exception.Message}", MessageType.Error);
+            }
+        }
+
+        private static void ApplyLocalBinding(MixedSpaceMapBinding binding, TextAsset asset, int mapId,
+            string displayName, MixedSpaceCloudMapDescriptor descriptor, bool hasMetadata)
+        {
             if (hasMetadata)
             {
-                m_Target.DefineFromCloud(
+                binding.DefineFromCloud(
                     descriptor,
                     MixedSpaceProviderIds.OnDevice,
-                    m_LocalMapAsset,
+                    asset,
                     BuildContentPolicy(MixedSpaceMapContentLocation.EmbeddedAsset),
                     renameObject: true);
             }
             else
             {
-                m_Target.Define(
+                binding.Define(
                     mapId,
                     displayName,
                     MixedSpaceProviderIds.OnDevice,
-                    m_LocalMapAsset,
+                    asset,
                     MixedSpaceMapBinding.IdentityAlignment(),
                     default,
                     0,
                     BuildContentPolicy(MixedSpaceMapContentLocation.EmbeddedAsset),
                     renameObject: true);
             }
-            SaveTarget();
-            SetStatus($"Bound local map '{displayName}' for on-device localization.", MessageType.Info);
         }
 
         private void BeginCloudBinding()
@@ -302,6 +420,12 @@ namespace MixedSpace.EditorTools
             if (!ValidateTarget() || m_CloudMapId <= 0)
             {
                 SetStatus("Select a target and enter a positive cloud map ID.", MessageType.Warning);
+                return;
+            }
+
+            if (MixedSpaceMapDefinition.IsRetiredKey(m_CloudMapId))
+            {
+                SetStatus("Four-digit maps are retired. Enter an XrLoc map ID.", MessageType.Warning);
                 return;
             }
 
@@ -367,6 +491,7 @@ namespace MixedSpace.EditorTools
             }
 
             Undo.RecordObject(m_Target, "Bind MixedSpace cloud map");
+            Undo.RecordObject(m_Target.gameObject, "Bind MixedSpace cloud map");
             m_Target.DefineFromCloud(
                 MixedSpaceCloudMapRecordAdapter.ToDomain(metadata),
                 providerKey,
@@ -374,10 +499,14 @@ namespace MixedSpace.EditorTools
                 contentPolicy,
                 renameObject: true);
 
+            RemoveStalePointCloudView();
             if (m_DownloadPointCloud)
                 yield return DownloadPointCloud();
 
             SaveTarget();
+            if (m_StatusType == MessageType.Error)
+                yield break;
+
             Complete($"Bound cloud map {m_Target.Definition.Key} to {providerKey}.");
         }
 
@@ -397,8 +526,13 @@ namespace MixedSpace.EditorTools
                 (_, path) =>
                 {
                     EnsurePointCloudView();
-                    m_Target.Preview.PresentFile(path);
-                    downloaded = true;
+                    downloaded = m_Target.Preview.PresentFile(path);
+                    if (downloaded)
+                    {
+                        var definition = m_Target.Definition;
+                        m_Target.Preview.gameObject.name = $"Point Cloud {definition.Key} - {definition.Label}";
+                        SaveTarget();
+                    }
                 });
 
             if (!downloaded)
@@ -540,8 +674,20 @@ namespace MixedSpace.EditorTools
             return new MixedSpaceMapContentPolicy(location);
         }
 
+        private void RemoveStalePointCloudView()
+        {
+            MixedSpacePointCloudView preview = m_Target.Preview;
+            if (preview == null || preview.MapKey == m_Target.Definition.Key)
+                return;
+
+            Undo.RecordObject(m_Target, "Remove point cloud for previous map");
+            m_Target.AttachPreview(null);
+            Undo.DestroyObjectImmediate(preview.gameObject);
+        }
+
         private void EnsurePointCloudView()
         {
+            RemoveStalePointCloudView();
             if (m_Target.Preview == null)
                 MixedSpacePointCloudPresenter.Show(m_Target);
         }
@@ -561,6 +707,12 @@ namespace MixedSpace.EditorTools
         {
             if (ValidateTarget() && m_Target.Definition.IsReady && m_Target.Definition.Key > 0)
             {
+                if (MixedSpaceMapDefinition.IsRetiredKey(m_Target.Definition.Key))
+                {
+                    SetStatus("Four-digit maps are retired. Bind an XrLoc map.", MessageType.Warning);
+                    return false;
+                }
+
                 if (MixedSpaceMapWorkspaceService.HasGeneratedLocalMapKey(m_Target.Definition))
                 {
                     SetStatus("This local-only map has no cloud map ID.", MessageType.Warning);

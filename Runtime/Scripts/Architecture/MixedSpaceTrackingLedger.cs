@@ -50,7 +50,7 @@ namespace MixedSpace.XR
 
             int attemptIncrement = m_CountProvidersSeparately
                 ? signal.AttemptedProviders
-                : 1;
+                : signal.AttemptedProviders > 0 ? 1 : 0;
             int successIncrement = m_CountProvidersSeparately
                 ? signal.SuccessfulProviders
                 : signal.SuccessfulProviders > 0 ? 1 : 0;

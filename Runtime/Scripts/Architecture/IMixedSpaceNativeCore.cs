@@ -1,9 +1,13 @@
 using System;
+using System.Runtime.InteropServices;
 using MixedSpace.XR;
 using UnityEngine;
 
 namespace MixedSpace
 {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void LogCallback(IntPtr msg);
+
     /// <summary>
     /// 原生引擎能力目录，上层仅选择所需的窄接口；应用公共契约不直接暴露原生 ABI 入口。
     /// Capability directory for the native engine. Higher layers choose the one
@@ -17,13 +21,10 @@ namespace MixedSpace
         IMixedSpaceNativeFrameEncoder FrameEncoder { get; }
         IMixedSpaceNativeLocalizer Localizer { get; }
         IMixedSpaceNativeGeoTransform GeoTransform { get; }
-        IMixedSpaceNativeMappingWorkspace Mapping { get; }
     }
 
     public interface IMixedSpaceNativeRuntime
     {
-        void ApplyImagePixelBudget(int maximumPixels);
-        int ResolveLicenseLevel(string developerToken);
         void AttachLogSink(IntPtr callback);
     }
 
@@ -53,12 +54,14 @@ namespace MixedSpace
         private MixedSpaceNativeLocalizationQuery(
             MixedSpaceSolverType solver,
             bool hasPrior,
+            int? priorMapKey,
             Vector3 priorPosition,
             int neighborCount,
             float radius)
         {
             Solver = solver;
             HasPrior = hasPrior;
+            PriorMapKey = priorMapKey;
             PriorPosition = priorPosition;
             NeighborCount = neighborCount;
             Radius = radius;
@@ -66,6 +69,7 @@ namespace MixedSpace
 
         public MixedSpaceSolverType Solver { get; }
         public bool HasPrior { get; }
+        public int? PriorMapKey { get; }
         public Vector3 PriorPosition { get; }
         public int NeighborCount { get; }
         public float Radius { get; }
@@ -76,6 +80,7 @@ namespace MixedSpace
             return new MixedSpaceNativeLocalizationQuery(
                 solver,
                 false,
+                null,
                 Vector3.zero,
                 0,
                 0f);
@@ -84,8 +89,21 @@ namespace MixedSpace
         public static MixedSpaceNativeLocalizationQuery Around(
             Vector3 priorPosition,
             int neighborCount,
+            float radius) => Around(null, priorPosition, neighborCount, radius);
+
+        /// <summary>
+        /// 位置使用指定地图的坐标系。省略地图键时，仅在单地图查询中使用先验。
+        /// The position is in the specified map's coordinates. An omitted key is
+        /// unambiguous only for a single-map search.
+        /// </summary>
+        public static MixedSpaceNativeLocalizationQuery Around(
+            int? mapKey,
+            Vector3 priorPosition,
+            int neighborCount,
             float radius)
         {
+            if (mapKey.HasValue && mapKey.Value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(mapKey), "Map key must be positive.");
             if (neighborCount < 0)
                 throw new ArgumentOutOfRangeException(
                     nameof(neighborCount),
@@ -96,6 +114,7 @@ namespace MixedSpace
             return new MixedSpaceNativeLocalizationQuery(
                 MixedSpaceSolverType.Prior,
                 true,
+                mapKey,
                 priorPosition,
                 neighborCount,
                 radius);
@@ -159,50 +178,6 @@ namespace MixedSpace
             double[] mapToEarth,
             out Vector3 mapPosition,
             out Quaternion mapRotation);
-    }
-
-    public sealed class MixedSpaceMappingFrame
-    {
-        public MixedSpaceMappingFrame(
-            IntPtr pixelBuffer,
-            int width,
-            int height,
-            int channels,
-            Vector4 intrinsics,
-            Vector3 position,
-            Quaternion rotation)
-        {
-            if (pixelBuffer == IntPtr.Zero)
-                throw new ArgumentException("Pixel buffer is required.", nameof(pixelBuffer));
-            if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
-            if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
-            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
-
-            PixelBuffer = pixelBuffer;
-            Width = width;
-            Height = height;
-            Channels = channels;
-            Intrinsics = intrinsics;
-            Position = position;
-            Rotation = rotation;
-        }
-
-        public IntPtr PixelBuffer { get; }
-        public int Width { get; }
-        public int Height { get; }
-        public int Channels { get; }
-        public Vector4 Intrinsics { get; }
-        public Vector3 Position { get; }
-        public Quaternion Rotation { get; }
-    }
-
-    public interface IMixedSpaceNativeMappingWorkspace
-    {
-        int CapturedFrameCount { get; }
-        bool Append(MixedSpaceMappingFrame frame);
-        byte[] BuildPayload(string workspacePath);
-        Vector3[] ReadPreviewPoints();
-        void ResetWorkspace();
     }
 
     /// <summary>

@@ -18,6 +18,10 @@ namespace MixedSpace.XR
         private ARCameraManager m_Manager;
         private XRCameraSubsystem m_ConfigurationOwner;
         private XRCameraConfiguration? m_InitialConfiguration;
+        private float m_UnavailableSince = -1f;
+        private float m_NextWarningAt;
+        private int m_UnavailableAttempts;
+        private bool m_ReportedUnavailable;
 
         public void Discover()
         {
@@ -76,21 +80,45 @@ namespace MixedSpace.XR
             image = null;
             if (m_Manager == null || !m_Manager.TryGetIntrinsics(out XRCameraIntrinsics calibration))
             {
-                MixedSpaceLogger.LogError("Could not acquire camera intrinsics.");
+                ReportUnavailable("camera intrinsics");
                 return false;
             }
             if (!m_Manager.TryAcquireLatestCpuImage(out XRCpuImage raw))
             {
-                MixedSpaceLogger.LogError("Could not acquire camera image.");
+                ReportUnavailable("camera image");
                 return false;
             }
             try
             {
+                if (m_ReportedUnavailable)
+                    MixedSpaceLogger.Log("AR Foundation 相机采集已恢复。");
+                m_UnavailableSince = -1f;
+                m_UnavailableAttempts = 0;
+                m_ReportedUnavailable = false;
                 image = new RawImage(raw, new Vector4(calibration.focalLength.x, calibration.focalLength.y,
                     calibration.principalPoint.x, calibration.principalPoint.y));
                 return true;
             }
             catch { raw.Dispose(); throw; }
+        }
+
+        // A missing CPU frame/calibration skips this attempt; the pipeline retries on the next cycle.
+        // Escalate only a continuing outage, never one missing frame to a user-facing error popup.
+        private void ReportUnavailable(string resource)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (m_UnavailableSince < 0f)
+            {
+                m_UnavailableSince = now;
+                m_NextWarningAt = now + 5f;
+            }
+            m_UnavailableAttempts++;
+            if (m_UnavailableAttempts < 3 || now < m_NextWarningAt) return;
+            m_NextWarningAt = now + 10f;
+            m_ReportedUnavailable = true;
+            MixedSpaceLogger.LogWarning(
+                $"AR Foundation 相机数据持续不可用：{resource}，连续 {m_UnavailableAttempts} 次，" +
+                $"已持续 {now - m_UnavailableSince:F1}s。当前跳过采集并等待下一帧，请检查相机权限及 AR Session 状态。");
         }
 
         private sealed class RawImage : IMixedSpaceCameraImage

@@ -1,10 +1,5 @@
-/* xrloc 核心负责运行配置、地图、定位和编码；地理转换与设备建图委托给共享的 PosePlugin 实例。
-   Provides runtime configuration, maps, localization and encoding through xrloc.
-   Geographic conversion and on-device mapping use the shared PosePlugin core. */
-
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Runtime.InteropServices;
 using MixedSpace.XR;
 using UnityEngine;
@@ -12,10 +7,8 @@ using UnityEngine;
 namespace MixedSpace
 {
     /// <summary>
-    /// 通过 libxrloc 提供地图、定位和编码，地理转换和建图委托给共享的 PosePlugin 核心。地图驻留索引用托管锁保护，方向探测需调用方串行定位；整个对象不保证任意并发调用安全。
-    /// Maps, localization and encoding use libxrloc; geographic conversion and mapping delegate to a
-    /// shared PosePlugin-backed core. Managed locks protect map residency, while callers must serialize
-    /// orientation-probing localization. This does not guarantee arbitrary concurrent use of the whole object.
+    /// 通过 libxrloc 提供地图、定位和图像编码。
+    /// Provides map storage, localization and image encoding through libxrloc.
     /// </summary>
     public sealed class MixedSpaceXrLocCore :
         IMixedSpaceNativeCore,
@@ -30,67 +23,32 @@ namespace MixedSpace
         /// </summary>
         private int? m_LastLoggedSolver;
         private int? m_LastLoggedAngle;
+        private int? m_LastLoggedPriorMapKey;
+        private int? m_LastReportedFailureStatus;
+        private long m_NextFailureReportTicks;
 
         private readonly object m_Gate = new object();
         private readonly HashSet<int> m_ResidentMaps = new HashSet<int>();
-        private readonly MixedSpaceNativeCore m_PluginFallback;
+        private readonly string m_PositionPriorLogPath;
 
+        public MixedSpaceXrLocCore() : this(null) { }
 
-        public MixedSpaceXrLocCore()
-            : this(null)
+        internal MixedSpaceXrLocCore(string positionPriorLogPath)
         {
-        }
-
-        public MixedSpaceXrLocCore(MixedSpaceNativeCore pluginFallback)
-        {
-            m_PluginFallback = pluginFallback ?? new MixedSpaceNativeCore();
+            m_PositionPriorLogPath = positionPriorLogPath;
         }
 
         public IMixedSpaceNativeRuntime Runtime => this;
         public IMixedSpaceNativeMapStore Maps => this;
         public IMixedSpaceNativeFrameEncoder FrameEncoder => this;
         public IMixedSpaceNativeLocalizer Localizer => this;
-        // xrloc 不提供 icvPos/icvRot/icvMap，因此复用 PosePlugin 核心。
-        // xrloc exports no icvPos / icvRot / icvMap family; reuse the PosePlugin core.
-        public IMixedSpaceNativeGeoTransform GeoTransform => m_PluginFallback.GeoTransform;
-        public IMixedSpaceNativeMappingWorkspace Mapping => m_PluginFallback.Mapping;
-
-        /// <summary>
-        /// 至少一个容器驻留时为 true，表示定位有可搜索地图。
-        /// True while at least one container is resident, i.e. localization has something to
-        /// search.
-        /// </summary>
-        internal bool HasLoadedMaps
-        {
-            get
-            {
-                lock (m_Gate)
-                    return m_ResidentMaps.Count > 0;
-            }
-        }
+        public IMixedSpaceNativeGeoTransform GeoTransform { get; } = new MixedSpaceGeographicTransform();
 
         #region Runtime
 
         public void AttachLogSink(IntPtr callback)
         {
             MixedSpaceXrLocNative.RegisterLogCallback(callback);
-        }
-
-        /// <summary>
-        /// 空操作：xrloc 无 LocalizationMaxPixels 对应项，自行建立图像金字塔，仅暴露 NumThreads 和 ImageCompressionLevel。
-        /// No-op. The PosePlugin budget knob ("LocalizationMaxPixels") has no xrloc
-        /// counterpart; xrloc sizes its own pyramid and only exposes "NumThreads"
-        /// and "ImageCompressionLevel".
-        /// </summary>
-        public void ApplyImagePixelBudget(int maximumPixels)
-        {
-            if (maximumPixels < 0)
-                throw new ArgumentOutOfRangeException(nameof(maximumPixels));
-        }
-
-        public int ResolveLicenseLevel(string developerToken)
-        {
-            return MixedSpaceXrLocNative.VerifyDeveloperToken(developerToken);
         }
 
         /// <summary>
@@ -117,6 +75,12 @@ namespace MixedSpace
                 throw new ArgumentNullException(nameof(payload));
             if (payload.Length == 0)
                 return false;
+            if (MixedSpaceMapDefinition.IsRetiredKey(mapKey) ||
+                MixedSpaceMapDefinition.HasLegacyHeader(payload))
+            {
+                MixedSpaceLogger.LogError($"Map {mapKey} uses a retired ID or container. An XrLoc map is required.");
+                return false;
+            }
 
             lock (m_Gate)
             {
@@ -185,10 +149,8 @@ namespace MixedSpace
         #region Frame encoding
 
         /// <summary>
-        /// 将像素编码为独立 PNG，忽略 prepareForMatching，因为 xrloc 不提供 icvCaptureImage 的匹配准备模式。
-        /// Encodes raw pixels into PNG. prepareForMatching is ignored: unlike
-        /// icvCaptureImage, the xrloc encoder has no matching-preparation mode and
-        /// always emits a standalone image.
+        /// 将像素编码为独立 PNG。prepareForMatching 保留用于接口兼容。
+        /// Encodes raw pixels into a standalone PNG. prepareForMatching is retained for interface compatibility.
         /// </summary>
         public byte[] Encode(
             byte[] pixels,
@@ -258,47 +220,56 @@ namespace MixedSpace
                 return null;
 
             MixedSpaceXrLocCamera camera = BuildCamera(profile);
-            float[] prior = BuildRotationPrior(profile);
+            float[] rotationPrior = BuildRotationPrior(profile);
+            MixedSpaceXrLocPosePrior? positionPrior = BuildPositionPrior(mapIds, query);
 
-            // A successful orientation probe is not evidence that its solver is
-            // appropriate. In particular, never replace configured solver 0 with
-            // solver 1 (rotation-prior mode) after one successful startup frame.
+            // 求解方式和角度由显式配置决定，定位失败不触发方向搜索。
+            // Keep the configured solver and angle; localization misses never trigger orientation searches.
             int solver = SolverFor(query);
             int angle = ScreenRotationAngle(profile);
-            if (m_LastLoggedSolver != solver || m_LastLoggedAngle != angle)
+            int? priorMapKey = positionPrior?.mapId;
+            if (m_LastLoggedSolver != solver || m_LastLoggedAngle != angle ||
+                m_LastLoggedPriorMapKey != priorMapKey)
             {
-                MixedSpaceLogger.Log($"[XRLOC-CONFIG] solver={solver} angle={angle} source=RunPlan orientation={(solver == 1 ? "rotation-prior" : "image-angle")}",
+                MixedSpaceLogger.Log(
+                    $"[XRLOC-CONFIG] solver={solver} angle={angle} solverSource=RunPlan angleSource={(profile.NativeImageRotationAngle.HasValue ? "native-hint" : "display-rotation")} " +
+                    $"rotationPrior=provided positionPriorMap={priorMapKey?.ToString() ?? "none"}",
                     MixedSpaceLogger.LoggingLevel.Verbose, nameof(MixedSpaceXrLocCore));
                 m_LastLoggedSolver = solver;
                 m_LastLoggedAngle = angle;
+                m_LastLoggedPriorMapKey = priorMapKey;
             }
             if (!TryLocalize(
                     mapIds,
                     profile,
                     pixelBuffer,
                     camera,
-                    prior,
+                    rotationPrior,
                     solver,
                     angle,
+                    positionPrior,
                     out MixedSpaceXrLocPose pose,
                     out int status,
                     out long elapsedMs))
             {
-                // 状态 Ok 但无位姿是正常未命中；定位服务已低频报告持续未命中，此处仅为意外状态写日志，避免逐帧刷屏。
-                // Ok with no pose is the ordinary miss: the call ran to completion and found nothing in frame. Writing that once
-                // per frame buries the log, and the localization service already reports a continuing run of misses at a low
-                // rate, so only an unexpected status earns a line here.
-                if (status != (int)MixedSpaceXrLocStatus.Ok)
+                // Report misses at most once per ten seconds (or when the status changes), including
+                // the native search inputs. Cloud fallback otherwise hides these behind a generic miss.
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (m_LastReportedFailureStatus != status || now >= m_NextFailureReportTicks)
                 {
-                    MixedSpaceLogger.Log(
-                        $"xrloc localization returned status={status} ({DescribeStatus(status)}) after {elapsedMs} ms across {mapIds.Length} map(s).",
-                        MixedSpaceLogger.LoggingLevel.Verbose,
-                        nameof(MixedSpaceXrLocCore));
+                    m_LastReportedFailureStatus = status;
+                    m_NextFailureReportTicks = now + 10L * System.Diagnostics.Stopwatch.Frequency;
+                    MixedSpaceLogger.LogWarning(
+                        $"[XRLOC-MISS] status={status} ({DescribeStatus(status)}) success={pose.success} " +
+                        $"maps=[{DescribeResidentMaps(mapIds)}] solver={solver} angle={angle} " +
+                        $"image={profile.PixelWidth}x{profile.PixelHeight}x{profile.ChannelCount} " +
+                        $"intrinsics=({camera.fx},{camera.fy},{camera.cx},{camera.cy}) elapsedMs={elapsedMs}.");
                 }
 
                 return null;
             }
 
+            m_LastReportedFailureStatus = null;
             return ToObservation(mapIds, pose);
         }
 
@@ -306,14 +277,15 @@ namespace MixedSpace
         /// 一次显式指定图像方向的原生定位调用。
         /// One native localization call with an explicit image orientation.
         /// </summary>
-        private static bool TryLocalize(
+        private bool TryLocalize(
             int[] mapIds,
             MixedSpaceCaptureProfile profile,
             IntPtr pixelBuffer,
             MixedSpaceXrLocCamera camera,
-            float[] prior,
+            float[] rotationPrior,
             int solver,
             int rotationAngle,
+            MixedSpaceXrLocPosePrior? positionPrior,
             out MixedSpaceXrLocPose pose,
             out int status,
             out long elapsedMs)
@@ -332,69 +304,61 @@ namespace MixedSpace
 
             MixedSpaceXrLocCamera localCamera = camera;
             var timer = System.Diagnostics.Stopwatch.StartNew();
-            status = MixedSpaceXrLocNative.Localize(
-                mapIds, mapIds.Length, ref image, ref localCamera, solver, prior, out pose);
+            if (positionPrior is MixedSpaceXrLocPosePrior nativePrior)
+            {
+                status = MixedSpaceXrLocNative.LocalizeWithPrior(
+                    mapIds, mapIds.Length, ref image, ref localCamera, solver, rotationPrior, ref nativePrior, out pose);
+            }
+            else
+            {
+                status = MixedSpaceXrLocNative.Localize(
+                    mapIds, mapIds.Length, ref image, ref localCamera, solver, rotationPrior, out pose);
+            }
             elapsedMs = timer.ElapsedMilliseconds;
+
+            if (m_PositionPriorLogPath != null && positionPrior is MixedSpaceXrLocPosePrior loggedPrior)
+            {
+                MixedSpaceLocalizationJournal.AppendPositionPriorLog(
+                    m_PositionPriorLogPath,
+                    profile.CapturedAtNanoseconds,
+                    mapIds,
+                    solver,
+                    rotationAngle,
+                    rotationPrior,
+                    loggedPrior,
+                    status,
+                    pose,
+                    elapsedMs);
+            }
 
             return status == (int)MixedSpaceXrLocStatus.Ok && pose.success != 0;
         }
 
-        /// <summary>
-        /// 历史方向诊断辅助函数，不由正式定位路径调用，不修改后续帧的解算配置。
-        /// Offline diagnostic helper only; never called by the production path and
-        /// never overrides the caller's solver or orientation on subsequent frames.
-        /// </summary>
-        private MixedSpaceLocalizationObservation ProbeImageOrientationForDiagnostics(
+        // 位置先验必须属于本次搜索的地图且坐标有限；只搜索一张地图时可推断未指定的地图 ID。
+        // A position prior must have finite coordinates and belong to a requested map. Infer the map ID only for a single-map request.
+        private static MixedSpaceXrLocPosePrior? BuildPositionPrior(
             int[] mapIds,
-            MixedSpaceCaptureProfile profile,
-            IntPtr pixelBuffer,
-            MixedSpaceXrLocCamera camera,
-            float[] prior)
+            MixedSpaceNativeLocalizationQuery query)
         {
-            int derived = ScreenRotationAngle(profile);
-            DumpProbeFrame(mapIds, profile, pixelBuffer, "a");
-            var candidates = new List<int[]>(6)
+            if (!query.HasPrior)
+                return null;
+
+            int mapKey = query.PriorMapKey ?? (mapIds.Length == 1 ? mapIds[0] : 0);
+            Vector3 position = query.PriorPosition;
+            if (mapKey <= 0 || Array.IndexOf(mapIds, mapKey) < 0 ||
+                !IsFinite(position.x) || !IsFinite(position.y) || !IsFinite(position.z))
+                return null;
+
+            return new MixedSpaceXrLocPosePrior
             {
-                new[] { 1, derived },   // 由先验四元数决定方向，忽略角度字段。 / prior quaternion decides; angle is ignored
-                new[] { 0, derived },
-                new[] { 0, 0 }
+                mapId = mapKey,
+                x = position.x,
+                y = position.y,
+                z = position.z
             };
-            foreach (int angle in new[] { 90, 180, 270 })
-                candidates.Add(new[] { 0, angle });
-
-            MixedSpaceLogger.Log(
-                $"[XRLOC-ORIENT] probe start: maps=[{DescribeResidentMaps(mapIds)}] " +
-                $"displayZ={profile.DisplayRotation.eulerAngles.z} derivedAngle={derived}", MixedSpaceLogger.LoggingLevel.Verbose);
-
-            var seen = new HashSet<string>();
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                int solver = candidates[i][0];
-                int angle = candidates[i][1];
-                string key = solver + ":" + angle;
-                if (!seen.Add(key))
-                    continue;
-
-                bool ok = TryLocalize(
-                    mapIds, profile, pixelBuffer, camera, prior, solver, angle,
-                    out MixedSpaceXrLocPose pose, out int status, out long elapsedMs);
-                MixedSpaceLogger.Log(
-                    $"[XRLOC-ORIENT] solver={solver} angle={angle} -> status={status} success={(ok ? 1 : 0)} {elapsedMs}ms", MixedSpaceLogger.LoggingLevel.Verbose);
-
-                if (!ok)
-                    continue;
-
-                MixedSpaceLogger.Log($"[XRLOC-ORIENT] diagnostic-only solver={solver} angle={angle} confidence={pose.confidence}", MixedSpaceLogger.LoggingLevel.Verbose);
-                return ToObservation(mapIds, pose);
-            }
-
-            // 对同一租约再次取样；字节相同说明是冻结快照，而非持续变化的相机缓冲区。
-            // Second sample of the same lease: identical bytes mean the buffer is a frozen snapshot rather than a live
-            // frame.
-            DumpProbeFrame(mapIds, profile, pixelBuffer, "b");
-            MixedSpaceLogger.Log("[XRLOC-ORIENT] no orientation convention matched; falling back to the steady-state path.", MixedSpaceLogger.LoggingLevel.Verbose);
-            return null;
         }
+
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
         private static int SolverFor(MixedSpaceNativeLocalizationQuery query) =>
             query != null && query.Solver == MixedSpaceSolverType.Lean ? 1 : 0;
@@ -416,88 +380,6 @@ namespace MixedSpace
             }
 
             return string.Join(",", parts);
-        }
-
-        /// <summary>
-        /// 定义 MIXEDSPACE_CAPTURE_DIAGNOSTICS 时导出方向探测帧、参数及亮度统计。
-        /// Exports orientation probe frames, parameters and luminance statistics when
-        /// MIXEDSPACE_CAPTURE_DIAGNOSTICS is defined.
-        /// </summary>
-        [System.Diagnostics.Conditional("MIXEDSPACE_CAPTURE_DIAGNOSTICS")]
-        private static void DumpProbeFrame(
-            int[] mapIds,
-            MixedSpaceCaptureProfile profile,
-            IntPtr pixelBuffer,
-            string stage)
-        {
-            try
-            {
-                int channels = profile.ChannelCount == 0 ? 1 : profile.ChannelCount;
-                int size = checked(profile.PixelWidth * profile.PixelHeight * channels);
-                var bytes = new byte[size];
-                Marshal.Copy(pixelBuffer, bytes, 0, size);
-
-                int min = 255, max = 0;
-                long total = 0;
-                int distinct = 0;
-                var seenLevels = new bool[256];
-                for (int i = 0; i < bytes.Length; i++)
-                {
-                    int value = bytes[i];
-                    if (value < min) min = value;
-                    if (value > max) max = value;
-                    total += value;
-                    if (!seenLevels[value])
-                    {
-                        seenLevels[value] = true;
-                        distinct++;
-                    }
-                }
-
-                Vector4 k = profile.CameraIntrinsics;
-                Quaternion tracker = profile.TrackerRotation;
-                Quaternion display = profile.DisplayRotation;
-                var distortion = new List<string>();
-                if (profile.LensDistortion != null)
-                    foreach (double value in profile.LensDistortion)
-                        distortion.Add(value.ToString("R"));
-
-                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + "_" + stage;
-                string rawPath = Path.Combine(Application.persistentDataPath, "xrloc_frame_" + stamp + ".raw");
-                string jsonPath = Path.Combine(Application.persistentDataPath, "xrloc_frame_" + stamp + ".json");
-                File.WriteAllBytes(rawPath, bytes);
-                File.WriteAllText(jsonPath, string.Concat(
-                    "{\n",
-                    "  \"raw\": \"", Path.GetFileName(rawPath), "\",\n",
-                    "  \"width\": ", profile.PixelWidth, ",\n",
-                    "  \"height\": ", profile.PixelHeight, ",\n",
-                    "  \"channels\": ", channels, ",\n",
-                    "  \"pixelFormat\": \"", profile.PixelFormat, "\",\n",
-                    "  \"lensDistortion\": [", string.Join(", ", distortion.ToArray()), "],\n",
-                    "  \"fx\": ", k.x.ToString("R"), ", \"fy\": ", k.y.ToString("R"),
-                    ", \"cx\": ", k.z.ToString("R"), ", \"cy\": ", k.w.ToString("R"), ",\n",
-                    "  \"trackerRotation\": [",
-                        tracker.x.ToString("R"), ", ", tracker.y.ToString("R"), ", ",
-                        tracker.z.ToString("R"), ", ", tracker.w.ToString("R"), "],\n",
-                    "  \"displayRotation\": [",
-                        display.x.ToString("R"), ", ", display.y.ToString("R"), ", ",
-                        display.z.ToString("R"), ", ", display.w.ToString("R"), "],\n",
-                    "  \"displayEulerZ\": ", display.eulerAngles.z.ToString("R"), ",\n",
-                    "  \"mapIds\": [", string.Join(", ", Array.ConvertAll(mapIds, id => id.ToString())), "],\n",
-                    "  \"min\": ", min, ", \"max\": ", max, ", \"mean\": ",
-                        bytes.Length == 0 ? "0" : ((double)total / bytes.Length).ToString("F2"), ",\n",
-                    "  \"distinctLevels\": ", distinct, "\n",
-                    "}\n"));
-
-                MixedSpaceLogger.Log(
-                    $"[XRLOC-DUMP] frame[{stage}] {profile.PixelWidth}x{profile.PixelHeight}x{channels} " +
-                    $"min={min} max={max} mean={(bytes.Length == 0 ? 0d : (double)total / bytes.Length):F2} " +
-                    $"levels={distinct} -> {rawPath}", MixedSpaceLogger.LoggingLevel.Verbose);
-            }
-            catch (Exception error)
-            {
-                MixedSpaceLogger.LogWarning($"[XRLOC-DUMP] frame dump failed: {error.Message}");
-            }
         }
 
         /// <summary>
@@ -576,10 +458,8 @@ namespace MixedSpace
             values != null && index < values.Count ? values[index] : 0d;
 
         /// <summary>
-        /// 与 PosePlugin icvLocalize 一致：合成跟踪和显示旋转，转换到原生手性，并按 C API 要求序列化 XYZW。
-        /// Same orientation the PosePlugin path hands to icvLocalize: the tracker and
-        /// display rotations composed, then reflected into the native handedness and
-        /// serialized XYZW as the C API expects.
+        /// 合成跟踪和显示旋转，转换到原生手性，并按 C API 要求序列化 XYZW。
+        /// Composes tracker and display rotations, reflects into the native frame and serializes in XYZW order.
         /// </summary>
         private static float[] BuildRotationPrior(MixedSpaceCaptureProfile profile)
         {

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -16,6 +16,12 @@ namespace MixedSpace.Editor
     /// </summary>
     internal static class MixedSpaceSampleSetup
     {
+        internal const string ReadyMessage = "当前自动检测项均已通过。";
+
+        // 根据当前待处理项显示修复按钮。
+        internal static bool FixAllButton(int pendingIssues) => pendingIssues > 0 &&
+            GUILayout.Button("Fix All · 一键修复待处理配置", GUILayout.Height(30));
+
         internal static bool IssueRow(string title, string detail, MessageType severity, string action, bool disabled = false)
         {
             bool clicked;

@@ -49,15 +49,23 @@ namespace MixedSpace
         {
             // 数值日志过滤与 Unity 控制台严重级别保持独立。
             // Preserve numeric filtering independently of Unity console severity.
-            if (m_Threshold() > level) return;
             var record = new MixedSpaceLogRecord(severity,
                 MixedSpaceLogText.SourceName(callerPath), MixedSpaceLogText.Redact(message));
-            try { m_Sink.Emit(record); }
+            // Device UI keeps diagnostics even when Console verbosity is restricted.
+            try { MixedSpaceRuntimeLog.ReceiveSdk(record); } catch { }
+            if (m_Threshold() > level) return;
+            bool previousForwarding = MixedSpaceRuntimeLog.ForwardingToConsole;
+            try
+            {
+                MixedSpaceRuntimeLog.ForwardingToConsole = true;
+                m_Sink.Emit(record);
+            }
             catch
             {
                 // 输出失败时不递归记录日志。
                 // Never recursively log an output failure.
             }
+            finally { MixedSpaceRuntimeLog.ForwardingToConsole = previousForwarding; }
         }
     }
 

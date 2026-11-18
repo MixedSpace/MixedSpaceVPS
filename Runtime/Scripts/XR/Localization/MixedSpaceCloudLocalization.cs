@@ -167,7 +167,6 @@ namespace MixedSpace.XR
             SDKLocalizeResult result = await m_Cloud.Client.UploadAsync<
                 SDKLocalizeRequest,
                 SDKLocalizeResult>(request, capture, progress, cancellationToken);
-            MixedSpaceCaptureDiagnostics.Save(profile, capture, request, result);
             float elapsed = m_Clock.RealtimeSinceStartup - startedAt;
             if (result.error != "none" || !result.success || result.map <= 0)
             {

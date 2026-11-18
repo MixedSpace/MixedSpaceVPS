@@ -13,21 +13,34 @@ namespace MixedSpace.XR
     /// </summary>
     public sealed class MixedSpaceWorldChannel : IMixedSpaceWorldChannel
     {
+        // 将 1 秒除以 60 后向上取整到纳秒，确保实时位姿提交频率不超过 60 Hz。
+        // Round one sixtieth of a second up to a whole nanosecond to cap live pose submissions at 60 Hz.
+        private const long MinimumTrackingIntervalNanoseconds = 16_666_667;
+
         private readonly IMixedSpacePlatformAdapter m_Platform;
         private readonly IMixedSpacePoseFusion m_PoseFusion;
-        private readonly MixedSpaceWorldPoseState m_OutputState;
+        private readonly IMixedSpaceTrackingLossSource m_TrackingLossSource;
         private readonly bool m_WritePoseLogs;
         private readonly MixedSpacePoseFusionConfig m_PoseFusionConfig;
-        private bool m_WasTracking;
+        private bool? m_LastLoggedTracking;
         private bool m_Disposed;
         private MixedSpaceAlignmentSolution m_LastObservation;
         private long m_ObservationSequence;
         private float m_NextDiagnosticTime;
         private float m_NextFailureLogTime;
         private long m_LastSubmittedTrackingTimestamp;
+        private long m_LastHandledTrackingLossTimestamp;
+        private bool m_FusionResetFailed;
         private int m_SkippedBackwardTrackingSamples;
         private int m_SkippedDuplicateTrackingSamples;
+        private int m_SkippedTooCloseTrackingSamples;
         private float m_NextTrackingTimestampLogTime;
+        private float m_CadenceWindowStart;
+        private int m_CadenceSamples;
+        private int m_CadenceSubmissions;
+        private int m_CadenceOutputs;
+        private int m_CadenceWorldWrites;
+        private MixedSpaceTrackingTimestampSource m_CadenceTimestampSource;
 
         // 原生调用是同步的，缓冲区归当前通道所有。
         // Native calls are synchronous; these buffers belong to this channel.
@@ -51,14 +64,22 @@ namespace MixedSpace.XR
         {
             View = view ? view : throw new ArgumentNullException(nameof(view));
             m_Platform = platform ?? throw new ArgumentNullException(nameof(platform));
-            m_OutputState = new MixedSpaceWorldPoseState(view.CaptureOutputSettings());
+            m_TrackingLossSource = platform as IMixedSpaceTrackingLossSource;
+            m_LastHandledTrackingLossTimestamp = m_TrackingLossSource?.LastTrackingLossTimestampNanoseconds ?? 0;
+            View.IsPoseReliable = false;
             m_WritePoseLogs = writePoseLogs;
             poseFusionConfig.Validate();
             m_PoseFusionConfig = poseFusionConfig;
 
             IMixedSpacePoseFusion candidate = poseFusionFactory?.Create();
             if (candidate == null)
+            {
+                MixedSpaceLogger.LogError("Pose fusion session is unavailable. The World pose cannot be updated.");
                 return;
+            }
+
+            if (candidate is MixedSpacePoseFusion nativeFusion)
+                nativeFusion.WritePoseLogs = m_WritePoseLogs;
 
             int result = candidate.Initialize();
             if (result == 0) result = ApplyFusionConfig(candidate);
@@ -92,31 +113,21 @@ namespace MixedSpace.XR
         private void Publish(MixedSpaceAlignmentSolution solution)
         {
             ThrowIfDisposed();
-            if (solution == null || !View)
+            if (solution == null || !View || m_PoseFusion == null)
                 return;
-            // 定位结果到达时，相应采集可能已失去跟踪。
-            // A localization result can arrive after its capture lost tracking.
-            if (m_PoseFusion != null && !m_Platform.SamplePose().IsTracking)
+            // 定位结果可能在跟踪丢失后才到达；拒绝在丢失时刻或之前采集的结果。
+            // A localization result can arrive after tracking is lost. Reject captures at or before the loss.
+            MixedSpacePlatformPoseSample sample = m_Platform.SamplePose();
+            TraceTrackingState(sample);
+            if (!ResetFusionAfterTrackingLoss() || !sample.IsTracking ||
+                (m_LastHandledTrackingLossTimestamp > 0 &&
+                 solution.TimestampNanoseconds <= m_LastHandledTrackingLossTimestamp))
                 return;
             if (!IsValidPose(solution.WorldPose) || !IsValidPose(solution.TrackerPose) || !IsValidPose(solution.MapPose))
             {
                 ReportFailure("invalid_localization_observation", -3);
                 return;
             }
-            if (m_PoseFusion == null)
-            {
-                // 平台可以不提供融合实现；已求解世界位姿仍可作为有效、确定的回退输出。
-                // A platform may intentionally provide no fusion implementation. The solved world pose remains a valid,
-                // deterministic fallback.
-                Matrix4x4 pose = View.ProcessAlignment ?
-                    m_OutputState.Accept(solution, Time.deltaTime) : solution.WorldPose;
-                View.ApplyPose(pose, m_WritePoseLogs, solution.TimestampNanoseconds);
-                View.IsPoseReliable = true;
-                CommitObservation(solution);
-                TraceAlignment("direct_output", solution.TimestampNanoseconds, false, pose, null, null);
-                return;
-            }
-
             // 通过一致性检查后仍保留原始观测，不将平滑后的显示位姿写回原生融合。
             // Preserve the original observation after consistency checks; never feed a smoothed display pose into fusion.
             if (solution.TimestampNanoseconds <= 0)
@@ -145,7 +156,7 @@ namespace MixedSpace.XR
             CommitObservation(solution);
             if (m_WritePoseLogs)
             {
-                TraceAlignment("submit", output.TimestampNanoseconds, m_WasTracking, null,
+                TraceAlignment("submit", output.TimestampNanoseconds, sample.IsTracking, null,
                     new[] { "map_to_native", "capture_to_native", "add_localization" },
                     new[] { mapConversion, trackingConversion, submission });
                 MixedSpaceLocalizationJournal.AppendLocalizationLog(output, localization);
@@ -163,13 +174,10 @@ namespace MixedSpace.XR
             try
             {
                 ThrowIfDisposed();
-                // 即使处理关闭也清理历史，重新启用时不能恢复重置前的样本。
-                // Clear even when processing is disabled; re-enabling must not resurrect samples from before the session reset.
-                m_OutputState.Clear();
                 m_LastObservation = null;
                 View.IsPoseReliable = false;
-                m_WasTracking = false;
-                // Clear managed observation/output state without resetting the native fusion session.
+                // 此处只清除托管侧的观测状态，保留原生融合会话。
+                // Clear the last managed observation without resetting the native fusion session.
                 if (m_WritePoseLogs)
                     TraceAlignment("clear", 0, false, null, null, null);
                 return Task.CompletedTask;
@@ -177,40 +185,44 @@ namespace MixedSpace.XR
             catch (Exception exception) { return Task.FromException(exception); }
         }
 
+        internal bool NeedsTrackingSample => !m_Disposed && View && m_PoseFusion != null;
+
         public void Tick()
         {
-            if (m_Disposed || !View)
+            if (NeedsTrackingSample)
+                Tick(m_Platform.SamplePose());
+        }
+
+        internal void Tick(MixedSpacePlatformPoseSample sample)
+        {
+            if (!NeedsTrackingSample)
                 return;
 
-            if (m_PoseFusion == null)
+            if (m_WritePoseLogs)
             {
-                // 禁用位姿处理时仍推进平滑时间，直到 World 关闭。
-                // Advance smoothing time while pose processing is disabled, until the World closes.
-                m_OutputState.Advance(Time.deltaTime);
-                // 回退输出仅在定位结果到达时发布，不在两次定位之间逐帧修改 Transform。
-                // Preserve fallback output cadence: publish on a localization, not continuously to the Transform between
-                // localizations.
-                return;
+                TraceTrackingState(sample);
+                RecordTrackingCadence(sample.TimestampSource);
             }
-
-            MixedSpacePlatformPoseSample sample = m_Platform.SamplePose();
-            if (!sample.IsTracking)
+            bool fusionReady = ResetFusionAfterTrackingLoss();
+            if (!sample.IsTracking || !fusionReady)
             {
                 View.IsPoseReliable = false;
-                m_WasTracking = false;
                 return;
             }
-            m_WasTracking = true;
             if (sample.TimestampNanoseconds <= 0)
-                return;
-            // Only live GetTransform samples must be strictly increasing. Delayed localization
-            // observations keep their original capture times and are not subject to this check.
-            if (sample.TimestampNanoseconds <= m_LastSubmittedTrackingTimestamp)
             {
-                if (sample.TimestampNanoseconds < m_LastSubmittedTrackingTimestamp)
-                    ++m_SkippedBackwardTrackingSamples;
-                else ++m_SkippedDuplicateTrackingSamples;
-                TraceSkippedTrackingTimestamp(sample.TimestampNanoseconds);
+                ReportOutputFailure("invalid_tracking_timestamp", -3);
+                return;
+            }
+            // 限频仅用于 GetTransform；异步返回的定位结果仍使用图像采集时间。
+            // Rate limiting applies only to GetTransform. Asynchronous localization results retain the capture time.
+            long intervalNanoseconds = sample.TimestampNanoseconds - m_LastSubmittedTrackingTimestamp;
+            if (m_LastSubmittedTrackingTimestamp != 0 && intervalNanoseconds < MinimumTrackingIntervalNanoseconds)
+            {
+                if (intervalNanoseconds < 0) ++m_SkippedBackwardTrackingSamples;
+                else if (intervalNanoseconds == 0) ++m_SkippedDuplicateTrackingSamples;
+                else ++m_SkippedTooCloseTrackingSamples;
+                TraceSkippedTrackingTimestamp(sample, intervalNanoseconds);
                 return;
             }
 
@@ -220,7 +232,7 @@ namespace MixedSpace.XR
                 Vector3.one);
             if (!IsValidPose(trackingPose))
             {
-                ReportFailure("invalid_tracking_pose", -3);
+                ReportOutputFailure("invalid_tracking_pose", -3);
                 return;
             }
             for (int i = 0; i < 16; ++i)
@@ -232,13 +244,19 @@ namespace MixedSpace.XR
                 return;
             if (!IsValidNativePose(m_NativeTrackingPose))
             {
-                ReportFailure("invalid_native_tracking_pose", -3);
+                ReportOutputFailure("invalid_native_tracking_pose", -3);
                 return;
             }
             Array.Clear(m_NativeWorldPose, 0, 16);
-            // Retain this high-water mark across tracking loss and ClearAsync: neither resets the
-            // native fusion session. Record every submitted time even if native returns an error.
+            // 跨跟踪丢失和重置保留上次提交时间；原生调用失败也计入限频。
+            // Keep the last submission time across loss and reset. Failed native calls also count toward the rate limit.
             m_LastSubmittedTrackingTimestamp = sample.TimestampNanoseconds;
+            if (m_WritePoseLogs)
+            {
+                ++m_CadenceSubmissions;
+                MixedSpaceLocalizationJournal.AppendGetTransformInput(
+                    View, sample.TimestampNanoseconds, m_NativeTrackingPose);
+            }
             int fusionResult = m_PoseFusion.GetTransform(
                 sample.TimestampNanoseconds,
                 m_NativeTrackingPose,
@@ -247,9 +265,12 @@ namespace MixedSpace.XR
                 return;
             if (!IsValidNativePose(m_NativeWorldPose))
             {
-                ReportFailure("invalid_native_world_pose", -3);
+                ReportOutputFailure("invalid_native_world_pose", -3);
                 return;
             }
+
+            if (m_LastObservation == null || !NeedsTrackingSample)
+                return;
 
             Array.Clear(m_UnityWorldPose, 0, 16);
             int outputConversion = m_PoseFusion.ConvertNativePoseToUnity(m_NativeWorldPose, m_UnityWorldPose);
@@ -258,14 +279,18 @@ namespace MixedSpace.XR
             Matrix4x4 pose = new Matrix4x4();
             for (int i = 0; i < 16; i++)
                 pose[i] = m_UnityWorldPose[i];
-            if (!IsValidPose(pose))
+            if (!View.TryApplyPose(pose, out bool transformWritten, m_WritePoseLogs,
+                sample.TimestampNanoseconds, sample, fusionResult))
             {
-                ReportFailure("invalid_world_pose", -3);
+                ReportOutputFailure("invalid_world_pose", -3);
                 return;
             }
-            if (m_LastObservation == null) return;
-            View.ApplyPose(pose, m_WritePoseLogs, sample.TimestampNanoseconds, sample, fusionResult);
             View.IsPoseReliable = true;
+            if (m_WritePoseLogs)
+            {
+                ++m_CadenceOutputs;
+                if (transformWritten) ++m_CadenceWorldWrites;
+            }
             if (m_WritePoseLogs && Time.realtimeSinceStartup >= m_NextDiagnosticTime)
             {
                 m_NextDiagnosticTime = Time.realtimeSinceStartup + 1f;
@@ -275,20 +300,81 @@ namespace MixedSpace.XR
             }
         }
 
-        private void TraceSkippedTrackingTimestamp(long timestamp)
+        // 记录首个实时跟踪状态及后续变化，避免按帧重复写入相同状态。
+        // Log the first live tracking state and later changes without repeating the same state each frame.
+        private void TraceTrackingState(MixedSpacePlatformPoseSample sample)
         {
+            if (!m_WritePoseLogs || m_LastLoggedTracking == sample.IsTracking) return;
+            m_LastLoggedTracking = sample.IsTracking;
+            MixedSpaceLocalizationJournal.AppendLiveTrackingStatus(View, sample);
+        }
+
+        private void RecordTrackingCadence(MixedSpaceTrackingTimestampSource timestampSource)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (m_CadenceSamples == 0)
+                m_CadenceWindowStart = now;
+            else if (now - m_CadenceWindowStart >= 5f)
+            {
+                MixedSpaceLocalizationJournal.AppendFusionCadence(View, m_CadenceTimestampSource,
+                    now - m_CadenceWindowStart, m_CadenceSamples, m_CadenceSubmissions,
+                    m_CadenceOutputs, m_CadenceWorldWrites);
+                m_CadenceWindowStart = now;
+                m_CadenceSamples = 0;
+                m_CadenceSubmissions = 0;
+                m_CadenceOutputs = 0;
+                m_CadenceWorldWrites = 0;
+                m_CadenceTimestampSource = MixedSpaceTrackingTimestampSource.Unspecified;
+            }
+
+            if (timestampSource != MixedSpaceTrackingTimestampSource.Unspecified)
+                m_CadenceTimestampSource = timestampSource;
+            ++m_CadenceSamples;
+        }
+
+        private void TraceSkippedTrackingTimestamp(MixedSpacePlatformPoseSample sample, long intervalNanoseconds)
+        {
+            if (!m_WritePoseLogs && MixedSpaceLogger.Level > MixedSpaceLogger.LoggingLevel.Verbose) return;
             if (Time.realtimeSinceStartup < m_NextTrackingTimestampLogTime) return;
             m_NextTrackingTimestampLogTime = Time.realtimeSinceStartup + 5f;
             try
             {
-                string text = $"[TIME-CHECK] api=PoseFusionGetTransform action=skip_non_increasing timestamp_ns={timestamp} last_submitted_ns={m_LastSubmittedTrackingTimestamp} skipped_backward={m_SkippedBackwardTrackingSamples} skipped_duplicate={m_SkippedDuplicateTrackingSamples}";
-                MixedSpacePoseFusionLogFile.Initialize();
-                MixedSpacePoseFusionLogFile.Append(2, text);
+                string action = intervalNanoseconds > 0 ? "skip_too_close" : "skip_non_increasing";
+                string text = $"[TIME-CHECK] api=PoseFusionGetTransform action={action} timestamp_ns={sample.TimestampNanoseconds} timestamp_source={sample.TimestampSource} last_submitted_ns={m_LastSubmittedTrackingTimestamp} delta_ns={intervalNanoseconds} skipped_backward={m_SkippedBackwardTrackingSamples} skipped_duplicate={m_SkippedDuplicateTrackingSamples} skipped_too_close={m_SkippedTooCloseTrackingSamples}";
+                if (m_WritePoseLogs)
+                {
+                    MixedSpacePoseFusionLogFile.Initialize();
+                    MixedSpacePoseFusionLogFile.Append(2, text);
+                }
                 MixedSpaceLogger.Log(text, MixedSpaceLogger.LoggingLevel.Verbose, "TimestampCheck");
                 m_SkippedBackwardTrackingSamples = 0;
                 m_SkippedDuplicateTrackingSamples = 0;
+                m_SkippedTooCloseTrackingSamples = 0;
             }
             catch { }
+        }
+
+        // 每个通道处理同一丢失事件一次。重置失败时暂停融合，直到后续丢失触发的重置成功。
+        // Handle each observed loss once per channel. If reset fails, suspend fusion until a later loss is reset successfully.
+        private bool ResetFusionAfterTrackingLoss()
+        {
+            long lostAt = m_TrackingLossSource?.LastTrackingLossTimestampNanoseconds ?? 0;
+            if (lostAt <= m_LastHandledTrackingLossTimestamp)
+                return !m_FusionResetFailed;
+
+            m_LastHandledTrackingLossTimestamp = lostAt;
+            m_LastObservation = null;
+            View.IsPoseReliable = false;
+
+            m_FusionResetFailed = true;
+            int result = m_PoseFusion.Reset();
+            m_FusionResetFailed = result != 0;
+            if (m_FusionResetFailed)
+                MixedSpaceLogger.LogWarning($"PoseFusionReset failed after tracking loss with code {result}.");
+            if (m_WritePoseLogs)
+                TraceAlignment("tracking_loss_reset", lostAt, false, null, new[] { "PoseFusionReset" }, new[] { result });
+
+            return !m_FusionResetFailed;
         }
 
         public void Dispose()
@@ -296,7 +382,6 @@ namespace MixedSpace.XR
             if (m_Disposed)
                 return;
             m_Disposed = true;
-            m_OutputState.Clear();
             m_PoseFusion?.Dispose();
         }
 
@@ -329,7 +414,8 @@ namespace MixedSpace.XR
         private int ApplyFusionConfig(IMixedSpacePoseFusion fusion)
         {
             int result = fusion.SetConfig(m_PoseFusionConfig);
-            // Older native payloads retain their existing fallback behavior and report that custom values were not applied.
+            // 缺少配置入口时，通道使用原生库默认值继续初始化。
+            // The channel can initialize with native defaults if the configuration entry point is unavailable.
             return result == MixedSpacePoseFusion.ConfigurationNotSupported ? 0 : result;
         }
 
@@ -342,8 +428,14 @@ namespace MixedSpace.XR
         private bool CheckSuccess(string operation, int result)
         {
             if (result == 0) return true;
-            ReportFailure(operation, result);
+            ReportOutputFailure(operation, result);
             return false;
+        }
+
+        private void ReportOutputFailure(string operation, int result)
+        {
+            if (View) View.IsPoseReliable = false;
+            ReportFailure(operation, result);
         }
 
         private void ReportFailure(string operation, int result)
@@ -433,7 +525,8 @@ namespace MixedSpace.XR
 
             if (!m_Channels.TryGetValue(view, out MixedSpaceWorldChannel channel))
             {
-                channel = new MixedSpaceWorldChannel(view, m_Platform, m_PoseFusionFactory, m_WritePoseLogs, m_PoseFusionConfig);
+                channel = new MixedSpaceWorldChannel(view, m_Platform, m_PoseFusionFactory,
+                    m_WritePoseLogs, m_PoseFusionConfig);
                 m_Channels.Add(view, channel);
                 m_TickChannelsDirty = true;
             }
@@ -473,10 +566,15 @@ namespace MixedSpace.XR
             // 回调可能在 Tick 中打开或关闭通道，迭代稳定快照以保持安全。
             // Keep a stable snapshot if callbacks open/close channels during this tick.
             MixedSpaceWorldChannel[] channels = m_TickChannels;
+            MixedSpacePlatformPoseSample? sample = null;
             foreach (MixedSpaceWorldChannel channel in channels)
             {
-                if (channel.View)
-                    channel.Tick();
+                if (!channel.NeedsTrackingSample)
+                    continue;
+                // Share one live sample across all worlds in this update. Each native session keeps its own history.
+                if (!sample.HasValue)
+                    sample = m_Platform.SamplePose();
+                channel.Tick(sample.Value);
             }
         }
 

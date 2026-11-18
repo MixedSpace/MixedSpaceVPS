@@ -94,7 +94,7 @@ namespace MixedSpace.Editor
             if (!MixedSpaceXVXRSetupWindow.SampleImported)
                 throw new InvalidOperationException("请先通过 Package Manager 导入 XVXRAdapter 示例。");
             var dependencies = MixedSpaceXVXRSetupWindow.CheckDependencies();
-            if (dependencies.Count > 0 || MixedSpaceXVXRDependencyInstaller.MissingGroups().Count > 0)
+            if (dependencies.Count > 0)
                 throw new InvalidOperationException("请先完成插件导入。");
             Preflight();
             PrepareTemplate();
