@@ -16,7 +16,7 @@ namespace MixedSpace
     /// </summary>
     public class MixedSpaceSDK : MonoBehaviour
     {
-        public const string PackageVersion = "2.0.0";
+        public const string PackageVersion = "2.0.1";
 
         [SerializeField] private MixedSpaceRunPlan m_RunPlan;
         [SerializeField, Tooltip("Display on-device logs and error popups, including token validation, localization and pose fusion.")]

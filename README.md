@@ -3,7 +3,7 @@
 面向 Unity 空间增强现实应用的视觉定位（VPS）SDK，提供云端与设备端定位、地图加载与管理、位姿融合和诊断日志。
 
 - 包标识：`com.njyjxr.mixedspace`
-- 版本：`2.0.0`
+- 版本：`2.0.1`
 - 发布分支：`release/2.0.0-20261118`
 - 最低 Unity 版本：`2022.3`（按包配置声明）
 
@@ -14,14 +14,14 @@
 在 Unity 的 Package Manager 中选择 **Add package from git URL**，输入：
 
 ```text
-https://github.com/MixedSpace/MixedSpaceVPS.git#release/v2.0.0
+https://github.com/MixedSpace/MixedSpaceVPS.git#release/v2.0.1
 ```
 
-此地址在 GitHub 的 `release/v2.0.0` 标签发布后可用。
+此地址在 GitHub 的 `release/v2.0.1` 标签发布后可用。
 
 ### OpenUPM
 
-OpenUPM 收录且 `2.0.0` 构建完成后，在 **Project Settings > Package Manager** 添加 Scoped Registry：
+OpenUPM 收录且 `2.0.1` 构建完成后，在 **Project Settings > Package Manager** 添加 Scoped Registry：
 
 - Name：`OpenUPM`
 - URL：`https://package.openupm.com`
@@ -30,7 +30,7 @@ OpenUPM 收录且 `2.0.0` 构建完成后，在 **Project Settings > Package Man
 然后在 Package Manager 中选择 **Add package by name**：
 
 - Name：`com.njyjxr.mixedspace`
-- Version：`2.0.0`
+- Version：`2.0.1`
 
 添加 Registry 时请保留项目原有的 Registry 配置。
 
@@ -62,5 +62,3 @@ OpenUPM 收录且 `2.0.0` 构建完成后，在 **Project Settings > Package Man
 本次源码替换包含接口变化，例如移除 `MixedSpaceNativeCore`、`MixedSpaceHybridNativeCore` 和 `MixedSpaceSDK.RefreshLicenseAsync()`；使用这些接口的应用需要同步迁移。
 
 同路径资源保留已发布版本的 GUID，包内示例引用已同步映射。旧的 `Runtime/Prefabs/MixedSpaceRunPlan.asset` 保留供现有项目引用。
-
-OpenUPM 中已发布的旧 `2.0.0` 不会因 GitHub 分支或标签变化而更新。旧包撤回及同版本重新发布须经 OpenUPM 维护者确认，完成前请使用本页的 Git URL 安装。
