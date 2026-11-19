@@ -214,16 +214,6 @@ namespace MixedSpace.Editor
                 if ((int)PlayerSettings.Android.minSdkVersion < 26)
                     Issue("最低 Android API", "至少 26", "修复",
                         () => PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26, busy);
-                if (PlayerSettings.Android.targetSdkVersion == AndroidSdkVersions.AndroidApiLevelAuto ||
-                    (int)PlayerSettings.Android.targetSdkVersion >= 31)
-                {
-                    bool minimumTooHigh = (int)PlayerSettings.Android.minSdkVersion >= 31;
-                    Issue("目标 Android API", "已验证版本：27", minimumTooHigh ? "打开设置" : "修复", () =>
-                    {
-                        if (minimumTooHigh) SettingsService.OpenProjectSettings("Project/Player");
-                        else PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel27;
-                    }, busy);
-                }
                 GraphicsDeviceType[] apis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
                 if (PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android) || apis.Length != 1 || apis[0] != GraphicsDeviceType.OpenGLES3)
                     Issue("Android 图形 API", "OpenGLES3", "修复", () =>

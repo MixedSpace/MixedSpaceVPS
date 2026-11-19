@@ -169,8 +169,6 @@ namespace MixedSpace.Editor
             var xr = XRGeneralSettingsPerBuildTarget.XRGeneralSettingsForBuildTarget(BuildTargetGroup.Android);
             if (xr != null && xr.Manager != null && xr.Manager.activeLoaders.Count > 0)
                 throw new InvalidOperationException("Android 已启用其他 XR Loader；现有 Loader 未修改，请先确认与配套 XVXR 双眼渲染的兼容性。");
-            if ((int)PlayerSettings.Android.targetSdkVersion >= 31)
-                throw new InvalidOperationException("当前目标 Android API 为 31 或更高。配套 SDK 的 USB 权限接口仍含旧 PendingIntent 写法；现有目标版本未覆盖，请选择已验证的 API 27 或升级兼容 SDK。");
             string properties = Path.Combine(ProjectRoot, "Assets/Plugins/Android/gradleTemplate.properties");
             if (GetSetting("useCustomGradlePropertiesTemplate") && File.Exists(properties) &&
                 Regex.IsMatch(File.ReadAllText(properties), @"(?m)^\s*android\.(?:useAndroidX|enableJetifier)\s*=\s*false\s*$"))
@@ -190,7 +188,6 @@ namespace MixedSpace.Editor
                 if (PlayerSettings.GetScriptingBackend(NamedBuildTarget.Android) != ScriptingImplementation.IL2CPP) issues.Add("Android 需要 IL2CPP。");
                 if (PlayerSettings.Android.targetArchitectures != AndroidArchitecture.ARM64) issues.Add("Android 需要仅 ARM64。");
                 if ((int)PlayerSettings.Android.minSdkVersion < 26) issues.Add("最低 Android API 需要至少 26。");
-                if (PlayerSettings.Android.targetSdkVersion == AndroidSdkVersions.AndroidApiLevelAuto) issues.Add("当前 SDK 请使用已验证的目标 API 27。");
                 GraphicsDeviceType[] apis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
                 if (PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android) || apis.Length != 1 || apis[0] != GraphicsDeviceType.OpenGLES3)
                     issues.Add("Android 显示需要固定为 OpenGLES3。");
@@ -337,7 +334,6 @@ namespace MixedSpace.Editor
             ScriptingImplementation backend = PlayerSettings.GetScriptingBackend(NamedBuildTarget.Android);
             AndroidArchitecture architectures = PlayerSettings.Android.targetArchitectures;
             AndroidSdkVersions minimum = PlayerSettings.Android.minSdkVersion;
-            AndroidSdkVersions target = PlayerSettings.Android.targetSdkVersion;
             bool write = original == null || File.ReadAllText(TemplateFile) != configured;
             try
             {
@@ -351,7 +347,6 @@ namespace MixedSpace.Editor
                 if (backend != ScriptingImplementation.IL2CPP) PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
                 if (architectures != AndroidArchitecture.ARM64) PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
                 if ((int)minimum < 26) PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
-                if (target == AndroidSdkVersions.AndroidApiLevelAuto) PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel27;
                 if (automatic) PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
                 if (apis.Length != 1 || apis[0] != GraphicsDeviceType.OpenGLES3)
                     PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.OpenGLES3 });
@@ -368,7 +363,6 @@ namespace MixedSpace.Editor
                 PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, backend);
                 PlayerSettings.Android.targetArchitectures = architectures;
                 PlayerSettings.Android.minSdkVersion = minimum;
-                PlayerSettings.Android.targetSdkVersion = target;
                 PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, automatic);
                 PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, apis);
                 throw;

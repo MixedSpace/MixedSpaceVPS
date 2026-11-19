@@ -2,7 +2,7 @@
   "name": "com.njyjxr.mixedspace",
   "version": "2.0.0",
   "displayName": "MixedSpaceVPS",
-  "description": "MixedSpace SDK 是面向 Unity 空间增强现实应用的视觉定位（VPS）开发工具包，提供云端与设备端定位、地图加载与管理、相机图像和跟踪位姿接入、定位调度、位姿融合及诊断日志。通过平台适配器统一对接移动端与 XR 设备，并使用 RunPlan 配置定位模式和运行策略。包内提供 Mobile、PICO 4 Ultra、PICO 4 Ultra Enterprise、PICO 4 Enterprise、Huawei AR Engine、XRany 和 Rokid 的适配示例。",
+  "description": "MixedSpace SDK 是面向 Unity 的视觉定位（VPS）开发工具包，支持云端与设备端定位、多地图管理和空间内容对齐，提供相机图像与追踪位姿接入、位姿融合及运行诊断能力。通过统一的平台适配接口，帮助开发者构建移动端与 XR 设备上的空间增强现实应用。包内提供 Android、iOS、华为安卓、Rokid、PICO、Meta Quest、XREAL、元霓和诠视的平台适配示例。",
   "unity": "2022.3",
   "license": "Apache-2.0",
   "repository": {
@@ -32,52 +32,52 @@
   "samples": [
     {
       "displayName": "XREALAdapter",
-      "description": "XREAL Aura Android XR Camera 0 与 OpenXR 位姿适配器，包含连续定位示例。使用前需配置标定、相机外参及近似采帧时序；不包含录制与诊断试验工具。",
+      "description": "基于 Android XR 与 OpenXR 的 XREAL Aura 平台适配示例，提供相机图像、标定参数与追踪位姿接入，以及视觉定位示例场景。使用前需完成对应平台依赖与相机标定配置。",
       "path": "XREALAdapter~"
     },
     {
       "displayName": "MobileAdapter",
-      "description": "移动端接入示例，用于参考 MixedSpace SDK 的场景配置和平台适配方式。",
+      "description": "基于 Unity AR Foundation 的 Android 与 iOS 移动端适配示例，提供相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。Android 使用 ARCore XR Plugin，iOS 使用 ARKit XR Plugin。",
       "path": "MobileAdapter~"
     },
     {
       "displayName": "Pico4UAdapter",
-      "description": "PICO 4 Ultra 相机适配器与示例场景，通过 PXR_CameraImage 获取图像并接入跟踪位姿。导入前需安装提供对应相机 API 的 PICO Unity SDK。",
+      "description": "PICO 4 Ultra 平台适配示例，提供相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。使用前需安装支持对应相机接口的 PICO Unity SDK。",
       "path": "Pico4UAdapter~"
     },
     {
       "displayName": "Pico4UEAdapter",
-      "description": "PICO 4 Ultra Enterprise 企业相机适配器与示例场景，接入相机图像和跟踪位姿。导入前需安装兼容企业相机 API 的 PICO Unity Integration SDK。",
+      "description": "PICO 4 Ultra Enterprise 平台适配示例，提供企业相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。使用前需安装支持企业相机接口的 PICO Unity Integration SDK。",
       "path": "Pico4UEAdapter~"
     },
     {
       "displayName": "Pico4EAdapter",
-      "description": "PICO 4 Enterprise VST 相机适配器与示例场景。导入前需安装对应的 PICO 厂商 SDK。",
+      "description": "PICO 4 Enterprise 平台适配示例，提供 VST 相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。使用前需安装配套的 PICO SDK。",
       "path": "Pico4EAdapter~"
     },
     {
       "displayName": "HuaweiAdapter",
-      "description": "Android 平台 Huawei AR Engine 相机适配器与示例，包含配套的厂商 Unity SDK 文件。",
+      "description": "基于 Huawei AR Engine 的华为安卓适配示例，提供相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。包含配套的 Huawei AR Engine Unity SDK 文件。",
       "path": "HuaweiAdapter~"
     },
     {
       "displayName": "XRanyAdapter",
-      "description": "XRany GxrSdk 左侧鱼眼相机适配器与示例场景。导入前需安装 GxrSdk。",
+      "description": "基于 GxrSdk 的元霓 XRany 平台适配示例，提供左侧鱼眼相机图像、标定参数与头部追踪位姿接入，以及视觉定位示例场景。使用前需安装配套的 GxrSdk。",
       "path": "XRanyAdapter~"
     },
     {
       "displayName": "RokidAdapter",
-      "description": "Rokid 设备平台适配器与示例，用于将相机图像和跟踪位姿接入 MixedSpace SDK。",
+      "description": "Rokid 平台适配示例，提供相机图像、标定参数与追踪位姿接入，以及视觉定位示例场景。使用前需安装与目标设备配套的 Rokid SDK。",
       "path": "RokidAdapter~"
     },
     {
       "displayName": "XVXRAdapter",
-      "description": "XVXR 设备平台适配器与示例，用于将相机图像和跟踪位姿接入 MixedSpace SDK。",
+      "description": "基于 XVisio Unity SDK 的诠视 XVXR 平台适配示例，提供 RGB 相机图像、相机内参与头部追踪位姿接入，以及视觉定位示例场景。使用前需安装配套的 XVisio SDK 与 MRTK 依赖。",
       "path": "XVXRAdapter~"
     },
     {
       "displayName": "QuestAdapter",
-      "description": "Quest 3 / Quest 3S 相机与 VPS 定位示例。通过 Quest 设置与依赖检查的 Fix 或 Fix All 安装缺少的 Meta 和 Unity 依赖，并配置 TMP 与 Android。",
+      "description": "Meta Quest 3 与 Quest 3S 平台适配示例，提供透视相机图像、相机内参与追踪位姿接入，以及视觉定位示例场景。使用前需安装配套的 Meta XR Core SDK 与 MR Utility Kit，可通过 Quest 设置与依赖检查工具完成配置。",
       "path": "QuestAdapter~"
     }
   ]

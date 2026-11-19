@@ -48,6 +48,9 @@ namespace MixedSpace.Editor
                 if (issues.Count > 0) throw new BuildFailedException("XVXR: dependencies are not ready. " + string.Join("; ", issues));
                 var configuration = MixedSpaceXVXRProjectConfigurator.CheckConfiguration();
                 if (configuration.Count > 0) throw new BuildFailedException("XVXR: check Android Player Settings and Gradle configuration. " + string.Join("; ", configuration));
+                if (PlayerSettings.Android.targetSdkVersion == AndroidSdkVersions.AndroidApiLevelAuto ||
+                    (int)PlayerSettings.Android.targetSdkVersion >= 31)
+                    Debug.LogWarning("XVXR: 旧版配套 SDK 的 USB 权限接口使用旧 PendingIntent 写法；请验证当前目标 API 下的 USB 授权兼容性，必要时升级原厂 SDK。");
                 if (PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Android) != ScriptingImplementation.IL2CPP ||
                     PlayerSettings.Android.targetArchitectures != AndroidArchitecture.ARM64)
                     throw new BuildFailedException("XVXR: Android IL2CPP and ARM64-only are required for the bundled native libraries.");
